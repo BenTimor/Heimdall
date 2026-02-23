@@ -1,0 +1,6 @@
+node_modules/
+dist/
+certs/*.key
+certs/*.crt
+*.tsbuildinfo
+config/server-config.yaml

@@ -1,0 +1,46 @@
+proxy:
+  port: 8080
+  host: "0.0.0.0"
+
+ca:
+  certFile: "certs/ca.crt"
+  keyFile: "certs/ca.key"
+
+secrets:
+  OPENAI_API_KEY:
+    provider: "env"
+    path: "OPENAI_API_KEY"
+    allowedDomains: ["api.openai.com"]
+  ANTHROPIC_API_KEY:
+    provider: "env"
+    path: "ANTHROPIC_API_KEY"
+    allowedDomains: ["api.anthropic.com"]
+  AWS_SECRET:
+    provider: "aws"
+    path: "prod/api-keys"
+    field: "stripe_key"
+    allowedDomains: ["api.stripe.com"]
+
+cache:
+  enabled: true
+  defaultTtlSeconds: 300
+
+auth:
+  enabled: true
+  clients:
+    - machineId: "dev-laptop-1"
+      token: "some-secure-token-here"
+    - machineId: "ci-runner-7"
+      token: "another-secure-token"
+
+bypass:
+  domains: ["*.internal.corp", "10.*"]
+
+aws:
+  region: "us-east-1"
+
+logging:
+  level: "info"
+  audit:
+    enabled: true
+    file: "logs/audit.jsonl"
