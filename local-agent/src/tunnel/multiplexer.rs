@@ -1,0 +1,267 @@
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result};
+use bytes::Bytes;
+use dashmap::DashMap;
+use futures_util::stream::SplitSink;
+use futures_util::{SinkExt, StreamExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::mpsc;
+use tracing::{debug, error, info, warn};
+
+use crate::tunnel::client::FramedTunnel;
+use crate::tunnel::protocol::{Frame, FrameType};
+
+/// Heartbeat interval and timeout.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Channel for sending frames to the tunnel write half.
+pub type TunnelSender = mpsc::Sender<Frame>;
+
+/// Tracks one multiplexed connection.
+struct Connection {
+    /// Channel to push DATA frames toward the local socket.
+    local_tx: mpsc::Sender<Bytes>,
+}
+
+/// Manages multiplexed connections over a single tunnel.
+pub struct Multiplexer {
+    connections: Arc<DashMap<u32, Connection>>,
+    next_conn_id: AtomicU32,
+    tunnel_tx: TunnelSender,
+    last_heartbeat: Arc<tokio::sync::Mutex<Instant>>,
+}
+
+/// Status snapshot for health reporting.
+pub struct MultiplexerStatus {
+    pub active_connections: usize,
+    pub last_heartbeat: Instant,
+}
+
+impl Multiplexer {
+    /// Create a new multiplexer from a connected+authenticated tunnel.
+    /// Spawns the tunnel read loop and heartbeat sender.
+    /// Returns the multiplexer handle.
+    pub fn start(framed: FramedTunnel, shutdown: tokio::sync::watch::Receiver<bool>) -> Arc<Self> {
+        let (write_half, read_half) = framed.split();
+
+        let (tunnel_tx, tunnel_rx) = mpsc::channel::<Frame>(256);
+
+        let connections: Arc<DashMap<u32, Connection>> = Arc::new(DashMap::new());
+        let last_heartbeat = Arc::new(tokio::sync::Mutex::new(Instant::now()));
+
+        let mux = Arc::new(Self {
+            connections: connections.clone(),
+            next_conn_id: AtomicU32::new(1),
+            tunnel_tx: tunnel_tx.clone(),
+            last_heartbeat: last_heartbeat.clone(),
+        });
+
+        // Spawn tunnel writer task: drains tunnel_rx and writes to the tunnel.
+        tokio::spawn(Self::tunnel_write_loop(write_half, tunnel_rx));
+
+        // Spawn tunnel reader task: reads frames and dispatches them.
+        tokio::spawn(Self::tunnel_read_loop(
+            read_half,
+            connections.clone(),
+            tunnel_tx.clone(),
+            last_heartbeat.clone(),
+        ));
+
+        // Spawn heartbeat sender.
+        tokio::spawn(Self::heartbeat_loop(
+            tunnel_tx.clone(),
+            last_heartbeat.clone(),
+            shutdown,
+        ));
+
+        mux
+    }
+
+    /// Open a new multiplexed connection. Sends NEW_CONNECTION frame and
+    /// spawns a bridge between the local stream and the tunnel.
+    pub async fn new_connection(
+        self: &Arc<Self>,
+        local_stream: TcpStream,
+        host: &str,
+        port: u16,
+    ) -> Result<u32> {
+        let conn_id = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
+
+        let (local_tx, mut local_rx) = mpsc::channel::<Bytes>(64);
+        self.connections.insert(conn_id, Connection { local_tx });
+
+        // Send NEW_CONNECTION frame with "host:port" payload.
+        let payload = format!("{}:{}", host, port);
+        let frame = Frame::new(conn_id, FrameType::NewConnection, Bytes::from(payload));
+        self.tunnel_tx
+            .send(frame)
+            .await
+            .context("sending NEW_CONNECTION frame")?;
+
+        // Spawn bridge: local socket read -> tunnel DATA frames
+        let tunnel_tx = self.tunnel_tx.clone();
+        let connections = self.connections.clone();
+
+        tokio::spawn(async move {
+            let (mut read_half, mut write_half) = local_stream.into_split();
+
+            // Local -> tunnel
+            let tunnel_tx_clone = tunnel_tx.clone();
+            let conn_id_copy = conn_id;
+            let upload = tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                loop {
+                    match read_half.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let frame = Frame::new(
+                                conn_id_copy,
+                                FrameType::Data,
+                                Bytes::copy_from_slice(&buf[..n]),
+                            );
+                            if tunnel_tx_clone.send(frame).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            debug!(conn_id = conn_id_copy, error = %e, "local read error");
+                            break;
+                        }
+                    }
+                }
+            });
+
+            // Tunnel -> local (receive from local_rx channel)
+            let download = tokio::spawn(async move {
+                while let Some(data) = local_rx.recv().await {
+                    if write_half.write_all(&data).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            // Wait for either direction to finish, then clean up.
+            tokio::select! {
+                _ = upload => {}
+                _ = download => {}
+            }
+
+            // Send CLOSE frame
+            let close_frame = Frame::new(conn_id, FrameType::Close, Bytes::new());
+            let _ = tunnel_tx.send(close_frame).await;
+            connections.remove(&conn_id);
+            debug!(conn_id, "connection bridge closed");
+        });
+
+        Ok(conn_id)
+    }
+
+    pub fn status(&self) -> MultiplexerStatus {
+        MultiplexerStatus {
+            active_connections: self.connections.len(),
+            last_heartbeat: *self.last_heartbeat.blocking_lock(),
+        }
+    }
+
+    pub async fn status_async(&self) -> MultiplexerStatus {
+        MultiplexerStatus {
+            active_connections: self.connections.len(),
+            last_heartbeat: *self.last_heartbeat.lock().await,
+        }
+    }
+
+    // --- Internal tasks ---
+
+    async fn tunnel_write_loop(
+        mut sink: SplitSink<FramedTunnel, Frame>,
+        mut rx: mpsc::Receiver<Frame>,
+    ) {
+        while let Some(frame) = rx.recv().await {
+            if let Err(e) = sink.send(frame).await {
+                error!(error = %e, "tunnel write error");
+                break;
+            }
+        }
+        debug!("tunnel write loop exited");
+    }
+
+    async fn tunnel_read_loop(
+        mut stream: futures_util::stream::SplitStream<FramedTunnel>,
+        connections: Arc<DashMap<u32, Connection>>,
+        _tunnel_tx: TunnelSender,
+        last_heartbeat: Arc<tokio::sync::Mutex<Instant>>,
+    ) {
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(frame) => {
+                    match frame.frame_type {
+                        FrameType::Data => {
+                            if let Some(conn) = connections.get(&frame.conn_id) {
+                                if conn.local_tx.send(frame.payload).await.is_err() {
+                                    debug!(conn_id = frame.conn_id, "local receiver dropped");
+                                    connections.remove(&frame.conn_id);
+                                }
+                            }
+                        }
+                        FrameType::Close => {
+                            debug!(conn_id = frame.conn_id, "received CLOSE from server");
+                            connections.remove(&frame.conn_id);
+                        }
+                        FrameType::HeartbeatAck => {
+                            let mut hb = last_heartbeat.lock().await;
+                            *hb = Instant::now();
+                        }
+                        FrameType::AuthFail => {
+                            error!("received AUTH_FAIL from server, tunnel closing");
+                            break;
+                        }
+                        other => {
+                            warn!(frame_type = ?other, "unexpected frame type from server");
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, "tunnel read error");
+                    break;
+                }
+            }
+        }
+        info!("tunnel read loop exited");
+    }
+
+    async fn heartbeat_loop(
+        tunnel_tx: TunnelSender,
+        last_heartbeat: Arc<tokio::sync::Mutex<Instant>>,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) {
+        let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let hb_frame = Frame::new(0, FrameType::Heartbeat, Bytes::new());
+                    if tunnel_tx.send(hb_frame).await.is_err() {
+                        break;
+                    }
+
+                    let elapsed = {
+                        let hb = last_heartbeat.lock().await;
+                        hb.elapsed()
+                    };
+                    if elapsed > HEARTBEAT_TIMEOUT {
+                        error!("heartbeat timeout — no ACK in {:?}", HEARTBEAT_TIMEOUT);
+                        break;
+                    }
+                }
+                _ = shutdown.changed() => {
+                    break;
+                }
+            }
+        }
+        debug!("heartbeat loop exited");
+    }
+}

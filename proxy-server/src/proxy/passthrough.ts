@@ -2,14 +2,22 @@ import type { Socket } from "node:net";
 import * as net from "node:net";
 import type { Logger } from "../utils/logger.js";
 
+export interface PassthroughOptions {
+  /** When true, skip sending "HTTP/1.1 200 Connection Established" (tunnel mode). */
+  tunnelMode?: boolean;
+}
+
 export function handlePassthrough(
   clientSocket: Socket,
   targetHost: string,
   targetPort: number,
   logger: Logger,
+  options?: PassthroughOptions,
 ): void {
   const targetSocket = net.connect(targetPort, targetHost, () => {
-    clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    if (!options?.tunnelMode) {
+      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    }
     targetSocket.pipe(clientSocket);
     clientSocket.pipe(targetSocket);
   });

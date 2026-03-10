@@ -1,0 +1,35 @@
+[package]
+name = "guardian-local-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1"
+anyhow = "1"
+thiserror = "2"
+tokio-rustls = "0.26"
+rustls = "0.23"
+rustls-pemfile = "2"
+webpki-roots = "0.26"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dashmap = "6"
+axum = "0.8"
+futures-util = { version = "0.3", features = ["sink"] }
+futures-core = "0.3"
+futures-sink = "0.3"
+tokio-stream = "0.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windivert = { version = "0.6" }
+windivert-sys = { version = "0.10", features = ["static"] }
+etherparse = "0.16"
+
+[patch.crates-io]
+windivert-sys = { path = "windivert-sys-patched" }

@@ -171,6 +171,52 @@ export class ProxyServer {
     return false;
   }
 
+  /**
+   * Handle a connection arriving from the tunnel server.
+   * Skips CONNECT parsing and auth (already done by tunnel server).
+   * Goes straight to bypass-check → passthrough or MITM.
+   */
+  handleTunnelConnection(
+    socket: import("node:stream").Duplex,
+    targetHost: string,
+    targetPort: number,
+    machineId: string,
+  ): void {
+    const { logger, config } = this.deps;
+
+    logger.debug({ target: `${targetHost}:${targetPort}`, machineId }, "Tunnel connection");
+
+    const isBypassed = matchesAnyDomain(targetHost, config.bypass.domains);
+    const hasSecretConfig = this.hasSecretsForDomain(targetHost);
+
+    if (isBypassed || !hasSecretConfig) {
+      logger.debug({ target: `${targetHost}:${targetPort}` }, "Tunnel passthrough mode");
+      this.deps.auditLogger.logRequest({
+        timestamp: new Date().toISOString(),
+        machineId,
+        method: "TUNNEL",
+        target: `${targetHost}:${targetPort}`,
+        injectedSecrets: [],
+        action: "passthrough",
+      });
+      handlePassthrough(socket as import("node:net").Socket, targetHost, targetPort, logger, { tunnelMode: true });
+    } else {
+      logger.debug({ target: `${targetHost}:${targetPort}` }, "Tunnel MITM mode");
+      const mitmDeps: MitmDeps = {
+        certManager: this.deps.certManager,
+        resolver: this.deps.resolver,
+        config: this.config,
+        auditLogger: this.deps.auditLogger,
+        logger,
+        targetTlsOptions: this.deps.targetTlsOptions,
+        tunnelMode: true,
+      };
+      handleMitm(socket as import("node:net").Socket, targetHost, targetPort, machineId, mitmDeps).catch((err) => {
+        logger.error({ err, target: `${targetHost}:${targetPort}` }, "Tunnel MITM handler error");
+      });
+    }
+  }
+
   start(): Promise<void> {
     return new Promise((resolve) => {
       this.server.listen(this.config.proxy.port, this.config.proxy.host, () => {

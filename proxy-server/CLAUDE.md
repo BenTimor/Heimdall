@@ -10,7 +10,7 @@ Secret-injecting HTTPS CONNECT proxy. Clients set `HTTPS_PROXY=http://machineId:
 pnpm install          # install deps
 pnpm run build        # tsup → dist/
 pnpm run dev          # tsx src/index.ts (hot reload)
-pnpm test             # vitest run (all 94 tests)
+pnpm test             # vitest run (all 142 tests)
 pnpm test:watch       # vitest in watch mode
 pnpm run lint         # tsc --noEmit
 pnpm run generate-ca  # create certs/ca.crt + ca.key
@@ -28,22 +28,33 @@ Client (HTTPS_PROXY) → CONNECT → ProxyServer
         ├── Resolve secrets (env/AWS) → Inject into headers
         ├── Forward to real target (with Connection: close)
         └── Stream response back to client
+
+Agent (Rust) → TLS → TunnelServer
+  ├── AUTH frame → Authenticator → AUTH_OK/AUTH_FAIL
+  ├── NEW_CONNECTION → VirtualSocket → ProxyServer.handleTunnelConnection()
+  ├── DATA frames ↔ VirtualSocket (bidirectional multiplexing)
+  ├── CLOSE → destroy VirtualSocket
+  └── HEARTBEAT ↔ HEARTBEAT_ACK (keepalive)
 ```
 
 ## Project Structure
 
 ```
 src/
-  index.ts                  # Entry point: loads config, wires deps, starts server
+  index.ts                  # Entry point: loads config, wires deps, starts server + tunnel
   config/
-    schema.ts               # Zod schemas (ServerConfig and sub-schemas)
+    schema.ts               # Zod schemas (ServerConfig, TunnelConfig, and sub-schemas)
     loader.ts               # YAML → parse → validate
   proxy/
-    server.ts               # ProxyServer class (http.Server, CONNECT handler)
-    mitm.ts                 # MITM handler: TLS wrap → parse → inject → forward
-    passthrough.ts          # Bidirectional TCP pipe for bypass domains
+    server.ts               # ProxyServer class (CONNECT handler + handleTunnelConnection)
+    mitm.ts                 # MITM handler: TLS wrap → parse → inject → forward (tunnelMode)
+    passthrough.ts          # Bidirectional TCP pipe (tunnelMode skips 200 response)
     http-parser.ts          # SocketReader + parseHttpRequest/serializeHttpRequest
     cert-manager.ts         # Per-hostname TLS cert generation (node-forge)
+  tunnel/
+    protocol.ts             # Binary frame encode/decode (FrameType, Frame, FrameDecoder)
+    session-manager.ts      # AgentSession, SessionManager, VirtualSocket (Duplex stream)
+    tunnel-server.ts        # TLS server: auth, frame dispatch, heartbeat checker
   injection/
     scanner.ts              # Scan headers for __PLACEHOLDER__ patterns
     injector.ts             # Orchestrates scan → resolve → replace per header
@@ -68,6 +79,10 @@ tests/
   integration/
     proxy-e2e.test.ts       # Full CONNECT→MITM→inject→verify flow
     proxy-hardening.test.ts # POST bodies, concurrency, error cases
+    tunnel-e2e.test.ts      # Mock tunnel client → binary protocol → proxy → verify injection
+  tunnel-protocol.test.ts   # Roundtrip, partial delivery, cross-language hex fixtures
+  session-manager.test.ts   # VirtualSocket data flow, session CRUD
+  tunnel-server.test.ts     # Auth flow, heartbeat, session lifecycle
   *.test.ts                 # Unit tests for each module
 ```
 
@@ -75,6 +90,27 @@ tests/
 
 ### Config (Zod)
 All config is validated through `ServerConfigSchema` in `src/config/schema.ts`. YAML config file path: CLI arg → `GUARDIAN_CONFIG` env → `config/server-config.yaml`.
+
+Optional `tunnel` config enables the tunnel server (`TunnelConfigSchema`): port, host, TLS cert/key, heartbeat intervals.
+
+### Tunnel Protocol (Binary Framing)
+Frame format: `[ConnID: 4B BE][Type: 1B][PayloadLen: 4B BE][Payload]`. Header = 9 bytes. Max payload = 65536 bytes. ConnID 0 = control channel.
+
+Frame types: NEW_CONNECTION(0x01), DATA(0x02), CLOSE(0x03), AUTH(0x04), AUTH_OK(0x05), AUTH_FAIL(0x06), HEARTBEAT(0x07), HEARTBEAT_ACK(0x08).
+
+Cross-language compatible — hardcoded hex fixtures verified in both Node.js and Rust test suites.
+
+### Tunnel Server (`tunnel-server.ts`)
+- Accepts TLS connections on separate port (uses real server cert, not the MITM CA)
+- AUTH frame with "machineId:token" → validated via existing Authenticator
+- Dispatches frames: NEW_CONNECTION creates VirtualSocket → routes to `ProxyServer.handleTunnelConnection()`
+- VirtualSocket extends Duplex: writes become DATA frames, DATA frames become readable data
+- Heartbeat checker disconnects stale agents after timeout
+
+### Tunnel Mode (MITM + Passthrough)
+When `tunnelMode: true` in MitmDeps or PassthroughOptions:
+- Skip writing "HTTP/1.1 200 Connection Established" (agent already started TLS handshake)
+- `ProxyServer.handleTunnelConnection()` uses this for all tunnel-originated connections
 
 ### Secret Injection Flow
 1. `scanner.ts` finds `__([A-Z][A-Z0-9_]{1,63})__` in header values
@@ -91,6 +127,7 @@ Forces `Connection: close` on forwarded requests so the target closes the connec
 ### Testing
 - **Unit tests**: Mock dependencies, test each module in isolation
 - **Integration tests**: Real `ProxyServer` + mock HTTPS target + raw socket CONNECT + TLS upgrade
+- **Tunnel E2E tests**: Mock tunnel client speaking binary protocol → inject → verify
 - Tests use `targetTlsOptions: { rejectUnauthorized: false }` since mock targets have self-signed certs
 - Test response parsers handle chunked transfer encoding
 
@@ -105,11 +142,11 @@ Forces `Connection: close` on forwarded requests so the target closes the connec
 
 ## Known Decisions
 
-- **Tunnel server deferred**: `tunnel/` modules for Rust agent integration are not yet implemented
 - **Connection: close forced**: MITM forces close on all forwarded requests for simplicity
 - **Auth defaults to enabled**: `auth.enabled` defaults to `true` in schema
 - **No plain HTTP proxy**: Server returns 405 for non-CONNECT requests
 - **Audit logger uses sync writes**: `fs.writeSync` for JSONL audit entries to avoid data loss
+- **Tunnel server uses separate TLS cert**: Not the MITM CA — agent verifies server identity
 
 ## Docker
 

@@ -16,6 +16,8 @@ export interface MitmDeps {
   logger: Logger;
   /** Extra TLS options for outbound connections (e.g. rejectUnauthorized for testing) */
   targetTlsOptions?: tls.ConnectionOptions;
+  /** When true, skip sending "HTTP/1.1 200 Connection Established" (tunnel mode). */
+  tunnelMode?: boolean;
 }
 
 export async function handleMitm(
@@ -30,8 +32,10 @@ export async function handleMitm(
   // Generate certificate for this hostname
   const { cert, key } = certManager.getCertificate(targetHost);
 
-  // Send CONNECT 200 to client before wrapping in TLS
-  clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+  // In tunnel mode the client (agent) already started TLS — no CONNECT was sent.
+  if (!deps.tunnelMode) {
+    clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+  }
 
   // Create TLS server socket wrapping the client connection
   const tlsServer = new tls.TLSSocket(clientSocket, {

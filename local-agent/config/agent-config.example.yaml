@@ -1,0 +1,31 @@
+server:
+  host: "proxy.example.com"
+  port: 8443
+  # Optional: path to CA cert if server uses custom CA
+  ca_cert: null
+
+auth:
+  machine_id: "dev-machine-01"
+  token: "secret-token"
+
+local_proxy:
+  port: 19080
+  host: "127.0.0.1"
+
+health:
+  port: 19876
+  host: "127.0.0.1"
+
+reconnect:
+  initial_delay_ms: 1000
+  max_delay_ms: 60000
+  multiplier: 2.0
+
+transparent:
+  enabled: false
+  port: 19443
+  host: "0.0.0.0"
+  method: "auto"  # auto | windivert | system_proxy
+
+logging:
+  level: "info"

@@ -7,6 +7,8 @@ import { AwsProvider } from "./secrets/aws-provider.js";
 import { SecretResolver } from "./secrets/resolver.js";
 import { AuditLogger } from "./audit/audit-logger.js";
 import { ProxyServer } from "./proxy/server.js";
+import { Authenticator } from "./auth/authenticator.js";
+import { TunnelServer } from "./tunnel/tunnel-server.js";
 import type { SecretProvider } from "./secrets/types.js";
 
 async function main() {
@@ -70,10 +72,26 @@ async function main() {
 
   await proxy.start();
 
+  // Start tunnel server if configured
+  let tunnelServer: TunnelServer | null = null;
+  if (config.tunnel?.enabled) {
+    const authenticator = new Authenticator(config.auth);
+    tunnelServer = new TunnelServer({
+      tunnelConfig: config.tunnel,
+      authenticator,
+      proxyServer: proxy,
+      logger,
+    });
+    await tunnelServer.start();
+  }
+
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     logger.info({ signal }, "Shutting down...");
     try {
+      if (tunnelServer) {
+        await tunnelServer.stop();
+      }
       await proxy.stop();
       logger.info("Proxy server stopped gracefully");
     } catch (err) {

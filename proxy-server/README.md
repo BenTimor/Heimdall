@@ -161,7 +161,7 @@ Quick smoke test:
 pnpm test
 ```
 
-All 94 tests run locally with no external dependencies.
+All 142 tests run locally with no external dependencies.
 
 ## Configuration Reference
 

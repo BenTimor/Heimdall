@@ -56,6 +56,20 @@ export const LoggingConfigSchema = z.object({
   audit: AuditConfigSchema.default({}),
 });
 
+export const TunnelConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  port: z.number().int().min(1).max(65535).default(8443),
+  host: z.string().default("0.0.0.0"),
+  tls: z.object({
+    certFile: z.string(),
+    keyFile: z.string(),
+  }),
+  heartbeatIntervalMs: z.number().int().min(1000).default(30000),
+  heartbeatTimeoutMs: z.number().int().min(2000).default(90000),
+});
+
+export type TunnelConfig = z.infer<typeof TunnelConfigSchema>;
+
 export const ServerConfigSchema = z.object({
   proxy: ProxyConfigSchema.default({}),
   ca: CaConfigSchema.default({}),
@@ -65,6 +79,7 @@ export const ServerConfigSchema = z.object({
   bypass: BypassConfigSchema.default({}),
   aws: AwsConfigSchema.default({}),
   logging: LoggingConfigSchema.default({}),
+  tunnel: TunnelConfigSchema.optional(),
 });
 
 export type ServerConfig = z.infer<typeof ServerConfigSchema>;
