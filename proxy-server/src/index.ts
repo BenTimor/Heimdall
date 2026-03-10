@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import forge from "node-forge";
 import { loadConfig } from "./config/loader.js";
 import { createLogger } from "./utils/logger.js";
 import { loadCertManager } from "./proxy/cert-manager.js";
@@ -33,15 +35,22 @@ async function main() {
 
   logger.info({ configPath }, "Configuration loaded");
 
-  // Load CA certificate manager
+  // Load CA certificate manager with OCSP responder URL (AIA extension)
+  const ocspUrl = `http://127.0.0.1:${config.proxy.port}/ocsp`;
   let certManager;
   try {
-    certManager = loadCertManager(config.ca.certFile, config.ca.keyFile);
-    logger.info("CA certificate loaded");
+    certManager = loadCertManager(config.ca.certFile, config.ca.keyFile, ocspUrl);
+    logger.info({ ocspUrl }, "CA certificate loaded with OCSP responder URL");
   } catch (err) {
     logger.fatal({ err }, "Failed to load CA certificate — run `pnpm run generate-ca` first");
     process.exit(1);
   }
+
+  // Parse CA cert/key for the OCSP responder endpoint
+  const caCertPem = fs.readFileSync(config.ca.certFile, "utf-8");
+  const caKeyPem = fs.readFileSync(config.ca.keyFile, "utf-8");
+  const caCert = forge.pki.certificateFromPem(caCertPem);
+  const caKey = forge.pki.privateKeyFromPem(caKeyPem);
 
   // Set up secret providers
   const providers = new Map<string, SecretProvider>();
@@ -68,6 +77,8 @@ async function main() {
     resolver,
     auditLogger,
     logger,
+    caCert,
+    caKey,
   });
 
   await proxy.start();

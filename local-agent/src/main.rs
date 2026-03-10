@@ -258,17 +258,28 @@ fn cmd_install(
 
     // Enable traffic interception
     if !no_interception {
-        let transparent_port = cfg.transparent.port;
-        print!("Enabling traffic interception (port {})... ", transparent_port);
-        match ops.enable_interception(transparent_port) {
-            Ok(()) => {
-                install_state.interception_enabled = true;
-                summary.push("Traffic interception enabled");
-                println!("done");
+        print!("Enabling traffic interception... ");
+        match cfg.transparent.method {
+            config::InterceptionMethod::Windivert => {
+                // WinDivert captures at packet level at runtime — no install-time proxy needed
+                summary.push("WinDivert interception (active at runtime)");
+                println!("skipped (WinDivert handles interception at runtime)");
             }
-            Err(e) => {
-                println!("FAILED: {:#}", e);
-                summary.push("Traffic interception FAILED");
+            config::InterceptionMethod::SystemProxy | config::InterceptionMethod::Auto => {
+                // System proxy points to the local CONNECT proxy (speaks HTTP CONNECT)
+                let proxy_port = cfg.local_proxy.port;
+                print!("(system proxy → port {})... ", proxy_port);
+                match ops.enable_interception(proxy_port) {
+                    Ok(()) => {
+                        install_state.interception_enabled = true;
+                        summary.push("Traffic interception enabled (system proxy)");
+                        println!("done");
+                    }
+                    Err(e) => {
+                        println!("FAILED: {:#}", e);
+                        summary.push("Traffic interception FAILED");
+                    }
+                }
             }
         }
     }

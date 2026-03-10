@@ -30,6 +30,7 @@ function createTestCA(): { caCertPem: string; caKeyPem: string } {
   cert.setExtensions([
     { name: "basicConstraints", cA: true },
     { name: "keyUsage", keyCertSign: true },
+    { name: "subjectKeyIdentifier" },
   ]);
   cert.sign(keys.privateKey, forge.md.sha256.create());
   return {

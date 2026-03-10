@@ -44,6 +44,10 @@ mod ffi {
 struct NatEntry {
     original_dst_ip: Ipv4Addr,
     original_dst_port: u16,
+    /// Interface index of the original outbound packet (needed for reverse-NAT re-injection).
+    original_interface_index: u32,
+    /// Sub-interface index of the original outbound packet.
+    original_subinterface_index: u32,
     last_seen: Instant,
 }
 
@@ -115,7 +119,7 @@ impl WinDivertInterceptor {
         // Windows — only physically touched pages are committed.
         eprintln!("[windivert] opening SOCKET layer handle (on dedicated thread)");
         let socket_wd = on_large_stack(|| {
-            WinDivert::socket("outbound and remotePort == 443", -1, WinDivertFlags::new())
+            WinDivert::socket("outbound and remotePort == 443", -1, WinDivertFlags::new().set_sniff())
         })?.map_err(|e| anyhow::anyhow!("opening WinDivert socket handle: {e}"))?;
         eprintln!("[windivert] SOCKET handle opened");
         let socket_handle_raw = unsafe { get_raw_handle(&socket_wd) };
@@ -140,9 +144,13 @@ impl WinDivertInterceptor {
             None => "outbound and tcp.DstPort == 443 and ip".to_string(),
         };
 
-        // Build inbound filter: capture responses from our transparent listener
+        // Build response filter: capture responses from our transparent listener.
+        // With hairpin NAT, the listener's source IP is the machine's own NIC
+        // address (not 127.0.0.1), so we match only on port. Same-host traffic
+        // is "outbound" in WinDivert, so no direction constraint either.
+        // Packets without a NAT table entry are passed through unchanged.
         let inbound_filter = format!(
-            "inbound and tcp.SrcPort == {} and ip.SrcAddr == 127.0.0.1",
+            "ip and tcp.SrcPort == {}",
             transparent_port
         );
 
@@ -354,7 +362,12 @@ fn run_socket_tracker(
     debug!("socket tracker thread exiting");
 }
 
-/// Outbound capture loop: intercept TCP:443, rewrite dst to transparent listener.
+/// Outbound capture loop: intercept TCP:443, hairpin-NAT dst to transparent listener.
+///
+/// "Hairpin NAT": rewrites the destination to the packet's own source IP
+/// (the machine's NIC address) instead of 127.0.0.1. This keeps the packet
+/// on the same interface — no cross-interface routing or loopback RPF issues.
+/// The transparent listener on 0.0.0.0 accepts connections on any local IP.
 fn run_outbound(
     wd: WinDivert<layer::NetworkLayer>,
     transparent_port: u16,
@@ -364,7 +377,6 @@ fn run_outbound(
     excluded_pids: Arc<HashSet<u32>>,
 ) {
     let mut buffer = vec![0u8; 65535];
-    let redirect_ip = Ipv4Addr::new(127, 0, 0, 1);
     let port_bytes = transparent_port.to_be_bytes();
 
     info!("WinDivert outbound capture started");
@@ -375,24 +387,45 @@ fn run_outbound(
                 let mut packet = packet.into_owned();
                 let data = packet.data.to_mut();
 
+                // Parse IP header for diagnostics and PID check
+                let (pkt_src_ip, pkt_dst_ip, pkt_src_port, pkt_dst_port) =
+                    parse_packet_addrs(data);
+
                 // Check PID exclusion before NAT rewriting.
-                // Parse src_port from the packet to look up the PID.
                 if should_exclude(data, &socket_pid_map, &excluded_pids) {
-                    // Pass through without modification — this is an excluded process
                     let _ = packet.recalculate_checksums(Default::default());
-                    if let Err(e) = wd.send(&packet) {
-                        debug!(error = ?e, "failed to re-inject excluded outbound packet");
-                    }
+                    let _ = wd.send(&packet);
                     continue;
                 }
 
-                if let Err(reason) = rewrite_outbound(data, redirect_ip, &port_bytes, &nat_table) {
-                    debug!(reason, "outbound packet not rewritten, passing through");
+                // Only intercept SYN (new connections) or packets with existing
+                // NAT entries. Mid-stream packets from pre-existing connections
+                // pass through to avoid disrupting them.
+                let is_syn = is_syn_packet(data);
+                if !is_syn && !nat_table.contains_key(&(pkt_src_ip, pkt_src_port)) {
+                    let _ = packet.recalculate_checksums(Default::default());
+                    let _ = wd.send(&packet);
+                    continue;
+                }
+
+                let orig_iface = packet.address.interface_index();
+                let orig_subiface = packet.address.subinterface_index();
+
+                if is_syn {
+                    info!(
+                        src = %format!("{}:{}", pkt_src_ip, pkt_src_port),
+                        dst = %format!("{}:{}", pkt_dst_ip, pkt_dst_port),
+                        "intercepting new TCP:443 connection"
+                    );
+                }
+
+                if let Err(reason) = rewrite_outbound(data, &port_bytes, &nat_table, orig_iface, orig_subiface) {
+                    debug!(reason, "outbound not rewritten, passing through");
                 }
 
                 let _ = packet.recalculate_checksums(Default::default());
                 if let Err(e) = wd.send(&packet) {
-                    debug!(error = ?e, "failed to re-inject outbound packet");
+                    debug!(error = ?e, "outbound re-inject failed");
                 }
             }
             Err(e) => {
@@ -456,13 +489,19 @@ fn run_inbound(
                 let mut packet = packet.into_owned();
                 let data = packet.data.to_mut();
 
-                if let Err(reason) = rewrite_inbound(data, &nat_table) {
-                    debug!(reason, "inbound packet not rewritten, passing through");
+                match rewrite_inbound(data, &nat_table) {
+                    Ok((orig_iface, orig_subiface)) => {
+                        packet.address.set_outbound(false);
+                        packet.address.set_impostor(true);
+                        packet.address.set_interface_index(orig_iface);
+                        packet.address.set_subinterface_index(orig_subiface);
+                    }
+                    Err(_) => {} // Not our connection, pass through unchanged.
                 }
 
                 let _ = packet.recalculate_checksums(Default::default());
                 if let Err(e) = wd.send(&packet) {
-                    debug!(error = ?e, "failed to re-inject inbound packet");
+                    debug!(error = ?e, "response re-inject failed");
                 }
             }
             Err(e) => {
@@ -477,14 +516,21 @@ fn run_inbound(
     debug!("inbound capture thread exiting");
 }
 
-/// Rewrite an outbound packet's destination to the transparent listener.
+/// Rewrite an outbound packet's destination using hairpin NAT.
 ///
-/// Stores the original destination in the NAT table keyed by (src_ip, src_port).
+/// Sets dst_ip = src_ip (the machine's own NIC address) and dst_port =
+/// transparent_port. This "hairpin" keeps the packet on the same interface,
+/// avoiding loopback routing issues on Windows. The transparent listener on
+/// 0.0.0.0 accepts connections on any local IP.
+///
+/// Stores the original destination and interface info in the NAT table
+/// keyed by (src_ip, src_port).
 fn rewrite_outbound(
     data: &mut [u8],
-    redirect_ip: Ipv4Addr,
     redirect_port: &[u8; 2],
     nat_table: &DashMap<NatKey, NatEntry>,
+    interface_index: u32,
+    subinterface_index: u32,
 ) -> Result<(), &'static str> {
     // Minimum: 20-byte IP header + 4 bytes for TCP ports
     if data.len() < 24 {
@@ -507,22 +553,24 @@ fn rewrite_outbound(
     let src_port = u16::from_be_bytes([data[ihl], data[ihl + 1]]);
     let dst_port = u16::from_be_bytes([data[ihl + 2], data[ihl + 3]]);
 
-    // Store NAT mapping: (client_ip, client_port) → original destination
+    // Store NAT mapping: (client_ip, client_port) → original destination + interface
     nat_table.insert(
         (src_ip, src_port),
         NatEntry {
             original_dst_ip: dst_ip,
             original_dst_port: dst_port,
+            original_interface_index: interface_index,
+            original_subinterface_index: subinterface_index,
             last_seen: Instant::now(),
         },
     );
 
-    // Rewrite destination IP to redirect target (127.0.0.1)
-    let octets = redirect_ip.octets();
-    data[16] = octets[0];
-    data[17] = octets[1];
-    data[18] = octets[2];
-    data[19] = octets[3];
+    // Hairpin NAT: rewrite destination IP to source IP (machine's own address).
+    // Must read src bytes before writing to dst (no overlap: [12..16] vs [16..20]).
+    data[16] = data[12];
+    data[17] = data[13];
+    data[18] = data[14];
+    data[19] = data[15];
 
     // Rewrite destination port to transparent listener port
     data[ihl + 2] = redirect_port[0];
@@ -531,14 +579,17 @@ fn rewrite_outbound(
     Ok(())
 }
 
-/// Reverse-NAT an inbound response packet from the transparent listener.
+/// Reverse-NAT a response packet from the transparent listener.
 ///
 /// Looks up the original destination by (dst_ip, dst_port) — the client's
 /// (src_ip, src_port) from the original outbound packet.
+///
+/// Returns the original interface index and sub-interface index so the caller
+/// can re-inject the packet as inbound on the correct physical interface.
 fn rewrite_inbound(
     data: &mut [u8],
     nat_table: &DashMap<NatKey, NatEntry>,
-) -> Result<(), &'static str> {
+) -> Result<(u32, u32), &'static str> {
     if data.len() < 24 {
         return Err("packet too short");
     }
@@ -551,7 +602,7 @@ fn rewrite_inbound(
         return Err("invalid IHL");
     }
 
-    // For inbound responses: dst is the original client (our NAT key)
+    // For responses: dst is the original client (our NAT key)
     let client_ip = Ipv4Addr::new(data[16], data[17], data[18], data[19]);
     let client_port = u16::from_be_bytes([data[ihl + 2], data[ihl + 3]]);
     let key = (client_ip, client_port);
@@ -569,11 +620,42 @@ fn rewrite_inbound(
         data[ihl] = orig_port[0];
         data[ihl + 1] = orig_port[1];
 
+        let iface = entry.original_interface_index;
+        let subiface = entry.original_subinterface_index;
         entry.last_seen = Instant::now();
-        Ok(())
+        Ok((iface, subiface))
     } else {
         Err("NAT table miss")
     }
+}
+
+/// Check if a packet is a TCP SYN (new connection initiation, not SYN-ACK).
+fn is_syn_packet(data: &[u8]) -> bool {
+    if data.len() < 34 || (data[0] >> 4) != 4 {
+        return false;
+    }
+    let ihl = ((data[0] & 0x0F) as usize) * 4;
+    if ihl < 20 || data.len() < ihl + 14 {
+        return false;
+    }
+    let flags = data[ihl + 13];
+    (flags & 0x02 != 0) && (flags & 0x10 == 0) // SYN=1, ACK=0
+}
+
+/// Parse src/dst IP and ports from an IPv4 packet for diagnostic logging.
+fn parse_packet_addrs(data: &[u8]) -> (Ipv4Addr, Ipv4Addr, u16, u16) {
+    if data.len() < 24 || (data[0] >> 4) != 4 {
+        return (Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, 0, 0);
+    }
+    let ihl = ((data[0] & 0x0F) as usize) * 4;
+    if ihl < 20 || data.len() < ihl + 4 {
+        return (Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, 0, 0);
+    }
+    let src = Ipv4Addr::new(data[12], data[13], data[14], data[15]);
+    let dst = Ipv4Addr::new(data[16], data[17], data[18], data[19]);
+    let sp = u16::from_be_bytes([data[ihl], data[ihl + 1]]);
+    let dp = u16::from_be_bytes([data[ihl + 2], data[ihl + 3]]);
+    (src, dst, sp, dp)
 }
 
 /// Periodically remove stale NAT entries (connections closed/abandoned > 5 minutes ago).

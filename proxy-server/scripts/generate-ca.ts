@@ -40,6 +40,9 @@ function generateCA(): void {
       cRLSign: true,
       critical: true,
     },
+    {
+      name: "subjectKeyIdentifier",
+    },
   ]);
 
   // Self-sign with the CA private key

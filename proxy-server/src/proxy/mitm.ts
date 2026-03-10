@@ -1,4 +1,5 @@
 import * as tls from "node:tls";
+import { EventEmitter } from "node:events";
 import type { Socket } from "node:net";
 import type { CertManager } from "./cert-manager.js";
 import type { SecretResolver } from "../secrets/resolver.js";
@@ -30,11 +31,22 @@ export async function handleMitm(
   const { certManager, resolver, config, auditLogger, logger } = deps;
 
   // Generate certificate for this hostname
-  const { cert, key } = certManager.getCertificate(targetHost);
+  const { cert, key, ocspResponse } = certManager.getCertificate(targetHost);
 
   // In tunnel mode the client (agent) already started TLS — no CONNECT was sent.
   if (!deps.tunnelMode) {
     clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+  }
+
+  // Create a server-like EventEmitter for OCSP stapling support.
+  // Node.js TLSSocket wires up onOCSPRequest during _init() only when
+  // options.server has OCSPRequest listeners.  Setting _handle.onOCSPRequest
+  // after construction is too late — the handshake starts in the constructor.
+  const ocspEmitter = new EventEmitter();
+  if (ocspResponse) {
+    ocspEmitter.on("OCSPRequest", (_certDer: any, _issuerDer: any, cb: Function) => {
+      cb(null, ocspResponse);
+    });
   }
 
   // Create TLS server socket wrapping the client connection
@@ -42,7 +54,8 @@ export async function handleMitm(
     isServer: true,
     cert,
     key,
-  });
+    server: ocspEmitter,
+  } as any);
 
   tlsServer.on("error", (err) => {
     logger.debug({ err, target: `${targetHost}:${targetPort}` }, "TLS server socket error");

@@ -27,6 +27,7 @@ function createTestCA() {
   cert.setExtensions([
     { name: "basicConstraints", cA: true, critical: true },
     { name: "keyUsage", keyCertSign: true, cRLSign: true, critical: true },
+    { name: "subjectKeyIdentifier" },
   ]);
   cert.sign(keys.privateKey, forge.md.sha256.create());
   return {
@@ -107,6 +108,61 @@ describe("CertManager", () => {
     expect(first.key).toBe(second.key);
   });
 
+  it("sets keyUsage with digitalSignature and keyEncipherment", () => {
+    const result = manager.getCertificate("ku-test.com");
+    const generated = forge.pki.certificateFromPem(result.cert);
+
+    const kuExt = generated.getExtension("keyUsage") as {
+      digitalSignature?: boolean;
+      keyEncipherment?: boolean;
+      critical?: boolean;
+    } | null;
+    expect(kuExt).not.toBeNull();
+    expect(kuExt!.digitalSignature).toBe(true);
+    expect(kuExt!.keyEncipherment).toBe(true);
+    expect(kuExt!.critical).toBe(true);
+  });
+
+  it("sets extKeyUsage with serverAuth", () => {
+    const result = manager.getCertificate("eku-test.com");
+    const generated = forge.pki.certificateFromPem(result.cert);
+
+    const ekuExt = generated.getExtension("extKeyUsage") as {
+      serverAuth?: boolean;
+    } | null;
+    expect(ekuExt).not.toBeNull();
+    expect(ekuExt!.serverAuth).toBe(true);
+  });
+
+  it("sets subjectKeyIdentifier", () => {
+    const result = manager.getCertificate("ski-test.com");
+    const generated = forge.pki.certificateFromPem(result.cert);
+
+    const skiExt = generated.getExtension("subjectKeyIdentifier");
+    expect(skiExt).not.toBeNull();
+  });
+
+  it("sets authorityKeyIdentifier", () => {
+    const result = manager.getCertificate("aki-test.com");
+    const generated = forge.pki.certificateFromPem(result.cert);
+
+    const akiExt = generated.getExtension("authorityKeyIdentifier");
+    expect(akiExt).not.toBeNull();
+  });
+
+  it("returns an OCSP response Buffer", () => {
+    const result = manager.getCertificate("ocsp-test.com");
+    expect(result.ocspResponse).toBeInstanceOf(Buffer);
+    expect(result.ocspResponse.length).toBeGreaterThan(0);
+  });
+
+  it("caches OCSP response along with cert and key", () => {
+    const fresh = new CertManager(ca.certPem, ca.keyPem);
+    const first = fresh.getCertificate("ocsp-cache.com");
+    const second = fresh.getCertificate("ocsp-cache.com");
+    expect(first.ocspResponse).toBe(second.ocspResponse);
+  });
+
   it("clears the cache", () => {
     const fresh = new CertManager(ca.certPem, ca.keyPem);
     fresh.getCertificate("a.com");
@@ -170,5 +226,15 @@ describe("generate-ca.ts script", () => {
     } | null;
     expect(bc).not.toBeNull();
     expect(bc!.cA).toBe(true);
+  });
+
+  it("generates a CA cert with subjectKeyIdentifier", () => {
+    expect(fs.existsSync(certPath)).toBe(true);
+
+    const certPem = fs.readFileSync(certPath, "utf-8");
+    const cert = forge.pki.certificateFromPem(certPem);
+
+    const skiExt = cert.getExtension("subjectKeyIdentifier");
+    expect(skiExt).not.toBeNull();
   });
 });
