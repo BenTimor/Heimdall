@@ -1,8 +1,10 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use tracing::{info, warn, debug};
 
 use super::PlatformOps;
+use crate::state::RuntimeTrustState;
 
 pub struct WindowsPlatform;
 
@@ -60,6 +62,12 @@ impl PlatformOps for WindowsPlatform {
 
         info!(path = %cert_pem_path.display(), "Installing CA certificate to Windows trust store");
 
+        // Purge ALL existing Guardian CA certs first to prevent duplicates.
+        // certutil -addstore doesn't deduplicate, so repeated installs accumulate
+        // copies. Multiple copies cause OpenSSL to pick the wrong one (e.g. an
+        // older cert missing SubjectKeyIdentifier), breaking Python/Go/Ruby TLS.
+        purge_guardian_certs_from_root();
+
         let pem_data = std::fs::read_to_string(cert_pem_path)
             .context("reading CA certificate PEM file")?;
 
@@ -95,20 +103,15 @@ impl PlatformOps for WindowsPlatform {
             bail!("Administrator privileges required to remove CA certificate");
         }
 
-        info!("Removing Guardian CA certificate from Windows trust store");
+        info!("Removing Guardian CA certificate(s) from Windows trust store");
 
-        // Use certutil to find and delete Guardian certificates from ROOT store
-        let output = std::process::Command::new("certutil")
-            .args(["-delstore", "ROOT", "Guardian"])
-            .output()
-            .context("running certutil -delstore")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!("certutil -delstore may have failed (cert might not exist): {}", stderr);
+        let removed = purge_guardian_certs_from_root();
+        if removed == 0 {
+            warn!("No Guardian CA certificates found in ROOT store");
+        } else {
+            info!(count = removed, "Removed Guardian CA certificate(s) from ROOT store");
         }
 
-        info!("Guardian CA certificate removed from ROOT store");
         Ok(())
     }
 
@@ -243,6 +246,109 @@ impl PlatformOps for WindowsPlatform {
         }
 
         info!("Guardian agent service stopped");
+        Ok(())
+    }
+
+    fn configure_runtime_trust(&self, ca_cert_path: &Path) -> Result<RuntimeTrustState> {
+        let data_dir = guardian_data_dir();
+        std::fs::create_dir_all(&data_dir)
+            .context("creating Guardian data directory")?;
+
+        let bundle_path = data_dir.join("ca-bundle.pem");
+        let guardian_ca_path = data_dir.join("guardian-ca.pem");
+
+        // Export combined CA bundle (system CAs + Guardian CA already in store)
+        export_windows_ca_bundle(&bundle_path)
+            .context("exporting Windows CA bundle")?;
+        info!(path = %bundle_path.display(), "Exported combined CA bundle");
+
+        // Copy Guardian CA cert for NODE_EXTRA_CA_CERTS (additive, not a full bundle)
+        std::fs::copy(ca_cert_path, &guardian_ca_path)
+            .context("copying Guardian CA cert")?;
+        info!(path = %guardian_ca_path.display(), "Copied Guardian CA cert");
+
+        // Check existing state to handle re-install correctly
+        let existing_state = crate::state::InstallState::load()
+            .ok()
+            .flatten();
+        let preserve_originals = existing_state
+            .as_ref()
+            .map(|s| s.runtime_trust.configured)
+            .unwrap_or(false);
+        let existing_originals = existing_state
+            .map(|s| s.runtime_trust.original_env_vars);
+
+        let bundle_str = bundle_path.to_string_lossy().to_string();
+        let guardian_ca_str = guardian_ca_path.to_string_lossy().to_string();
+
+        let env_vars = vec![
+            ("SSL_CERT_FILE", bundle_str.as_str()),
+            ("REQUESTS_CA_BUNDLE", bundle_str.as_str()),
+            ("NODE_EXTRA_CA_CERTS", guardian_ca_str.as_str()),
+        ];
+
+        let mut original_env_vars = HashMap::new();
+
+        for (name, value) in &env_vars {
+            // On re-install, preserve the original values from previous state
+            let original = if preserve_originals {
+                existing_originals
+                    .as_ref()
+                    .and_then(|m| m.get(*name).cloned())
+                    .unwrap_or(None)
+            } else {
+                read_user_env_var(name)
+            };
+
+            original_env_vars.insert(name.to_string(), original);
+            set_user_env_var(name, value)
+                .with_context(|| format!("setting {} env var", name))?;
+            info!(var = name, value = value, "Set user environment variable");
+        }
+
+        broadcast_environment_change();
+        info!("Broadcast WM_SETTINGCHANGE for environment update");
+
+        Ok(RuntimeTrustState {
+            configured: true,
+            ca_bundle_path: Some(bundle_path),
+            guardian_ca_path: Some(guardian_ca_path),
+            original_env_vars,
+        })
+    }
+
+    fn remove_runtime_trust(&self, state: &RuntimeTrustState) -> Result<()> {
+        // Restore or delete each env var
+        for (name, original) in &state.original_env_vars {
+            match original {
+                Some(value) => {
+                    set_user_env_var(name, value)
+                        .with_context(|| format!("restoring {} env var", name))?;
+                    info!(var = name, "Restored original environment variable");
+                }
+                None => {
+                    delete_user_env_var(name)
+                        .with_context(|| format!("deleting {} env var", name))?;
+                    info!(var = name, "Deleted environment variable");
+                }
+            }
+        }
+
+        // Delete bundle files
+        if let Some(ref path) = state.ca_bundle_path {
+            if path.exists() {
+                std::fs::remove_file(path).ok();
+            }
+        }
+        if let Some(ref path) = state.guardian_ca_path {
+            if path.exists() {
+                std::fs::remove_file(path).ok();
+            }
+        }
+
+        broadcast_environment_change();
+        info!("Runtime CA trust removed and environment broadcast sent");
+
         Ok(())
     }
 }
@@ -416,6 +522,202 @@ fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
     }
 
     base64_decode(&base64_data)
+}
+
+/// Remove all Guardian CA certificates from the Windows ROOT store.
+/// Returns the number of certificates removed.
+///
+/// `certutil -delstore` removes one matching cert at a time, so we loop
+/// until no more "Guardian" certs remain. This handles duplicate copies
+/// left by repeated installs.
+fn purge_guardian_certs_from_root() -> usize {
+    let mut removed = 0;
+    // Safety limit to prevent infinite loop if certutil behaves unexpectedly.
+    for _ in 0..50 {
+        let output = std::process::Command::new("certutil")
+            .args(["-f", "-delstore", "ROOT", "Guardian"])
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                removed += 1;
+                debug!("Removed a Guardian CA certificate from ROOT store");
+            }
+            _ => break,
+        }
+    }
+    removed
+}
+
+/// Get the Guardian data directory (%APPDATA%\Guardian).
+fn guardian_data_dir() -> PathBuf {
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(appdata).join("Guardian")
+}
+
+/// Export all trusted root certificates from the Windows certificate stores
+/// to a combined PEM bundle, deduplicated by thumbprint.
+///
+/// Includes both `Root` (manually trusted) and `AuthRoot` (third-party roots
+/// auto-downloaded by Windows from Microsoft's Trusted Root Certificate Program).
+/// The `Root` store alone is often sparse on modern Windows — most CAs live in
+/// `AuthRoot` and are downloaded on demand.
+fn export_windows_ca_bundle(output_path: &Path) -> Result<()> {
+    let ps_script = r#"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$thumbprints = @{}
+$pems = [System.Collections.ArrayList]@()
+foreach ($storeLocation in @('LocalMachine', 'CurrentUser')) {
+    foreach ($storeName in @('Root', 'AuthRoot')) {
+        try {
+            $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($storeName, $storeLocation)
+            $store.Open('ReadOnly')
+            foreach ($cert in $store.Certificates) {
+                $tp = $cert.Thumbprint
+                if ($tp -and -not $thumbprints.ContainsKey($tp)) {
+                    # Skip certs missing Subject Key Identifier (OID 2.5.29.14).
+                    # OpenSSL 3.x rejects CA certs without SKI during chain validation.
+                    $hasSki = $false
+                    foreach ($ext in $cert.Extensions) {
+                        if ($ext.Oid.Value -eq '2.5.29.14') { $hasSki = $true; break }
+                    }
+                    if (-not $hasSki) { continue }
+                    $thumbprints[$tp] = $true
+                    $b64 = [Convert]::ToBase64String($cert.RawData, 'InsertLineBreaks')
+                    $null = $pems.Add("-----BEGIN CERTIFICATE-----`n$b64`n-----END CERTIFICATE-----")
+                }
+            }
+            $store.Close()
+        } catch { }
+    }
+}
+$pems -join "`n"
+"#;
+
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", ps_script])
+        .output()
+        .context("running PowerShell to export CA bundle")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("PowerShell CA export failed: {}", stderr);
+    }
+
+    // Normalize line endings (InsertLineBreaks uses \r\n, we want \n throughout)
+    let pem_data = String::from_utf8_lossy(&output.stdout);
+    let pem_data = pem_data.replace("\r\n", "\n");
+    let pem_data = pem_data.trim();
+
+    if pem_data.is_empty() {
+        bail!("CA bundle export produced empty output");
+    }
+
+    let cert_count = pem_data.matches("-----BEGIN CERTIFICATE-----").count();
+    info!(cert_count, path = %output_path.display(), "Exported CA bundle");
+
+    std::fs::write(output_path, pem_data.as_bytes())
+        .context("writing CA bundle PEM file")?;
+
+    Ok(())
+}
+
+/// Read a user-level environment variable from the registry (HKCU\Environment).
+fn read_user_env_var(name: &str) -> Option<String> {
+    let output = std::process::Command::new("reg")
+        .args(["query", r"HKCU\Environment", "/v", name])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // reg query output format: "    VarName    REG_SZ    Value"
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.starts_with(name) || line.contains(name) {
+            // Find REG_SZ or REG_EXPAND_SZ and extract the value after it
+            if let Some(pos) = line.find("REG_SZ") {
+                let after = &line[pos + "REG_SZ".len()..];
+                return Some(after.trim().to_string());
+            }
+            if let Some(pos) = line.find("REG_EXPAND_SZ") {
+                let after = &line[pos + "REG_EXPAND_SZ".len()..];
+                return Some(after.trim().to_string());
+            }
+        }
+    }
+
+    None
+}
+
+/// Set a user-level environment variable via the registry (HKCU\Environment).
+fn set_user_env_var(name: &str, value: &str) -> Result<()> {
+    let output = std::process::Command::new("reg")
+        .args([
+            "add", r"HKCU\Environment",
+            "/v", name,
+            "/t", "REG_SZ",
+            "/d", value,
+            "/f",
+        ])
+        .output()
+        .with_context(|| format!("running reg add for {}", name))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Failed to set env var {}: {}", name, stderr);
+    }
+    Ok(())
+}
+
+/// Delete a user-level environment variable from the registry (HKCU\Environment).
+fn delete_user_env_var(name: &str) -> Result<()> {
+    let output = std::process::Command::new("reg")
+        .args([
+            "delete", r"HKCU\Environment",
+            "/v", name,
+            "/f",
+        ])
+        .output()
+        .with_context(|| format!("running reg delete for {}", name))?;
+
+    if !output.status.success() {
+        // Not an error if the var doesn't exist
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        debug!("reg delete for {} may have failed (might not exist): {}", name, stderr);
+    }
+    Ok(())
+}
+
+/// Broadcast WM_SETTINGCHANGE so new processes pick up environment changes.
+fn broadcast_environment_change() {
+    let _ = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            r#"
+            Add-Type -TypeDefinition @"
+                using System;
+                using System.Runtime.InteropServices;
+                public class EnvBroadcast {
+                    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+                    public static extern IntPtr SendMessageTimeout(
+                        IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam,
+                        uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+                    public static void Broadcast() {
+                        UIntPtr result;
+                        SendMessageTimeout(
+                            (IntPtr)0xFFFF, 0x001A, UIntPtr.Zero, "Environment",
+                            0x0002, 5000, out result);
+                    }
+                }
+"@
+            [EnvBroadcast]::Broadcast()
+            "#,
+        ])
+        .output();
 }
 
 /// Simple base64 decoder (avoids adding a base64 crate dependency).

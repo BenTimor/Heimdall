@@ -1,5 +1,6 @@
 use std::path::Path;
 use anyhow::Result;
+use crate::state::RuntimeTrustState;
 
 #[cfg(target_os = "windows")]
 pub mod windows;
@@ -43,6 +44,13 @@ pub trait PlatformOps {
 
     /// Stop the agent system service.
     fn stop_service(&self) -> Result<()>;
+
+    /// Configure runtime CA trust so runtimes with their own CA stores
+    /// (Python, Node.js, Ruby, Go) trust the Guardian CA certificate.
+    fn configure_runtime_trust(&self, ca_cert_path: &Path) -> Result<RuntimeTrustState>;
+
+    /// Remove runtime CA trust configuration, restoring original env var values.
+    fn remove_runtime_trust(&self, state: &RuntimeTrustState) -> Result<()>;
 }
 
 /// Get the platform-specific implementation.

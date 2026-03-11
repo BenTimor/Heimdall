@@ -1,7 +1,18 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::SystemTime;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+/// State tracking for runtime CA trust environment variables.
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct RuntimeTrustState {
+    pub configured: bool,
+    pub ca_bundle_path: Option<PathBuf>,
+    pub guardian_ca_path: Option<PathBuf>,
+    /// Env vars that were set → their original values (None = didn't exist before)
+    pub original_env_vars: HashMap<String, Option<String>>,
+}
 
 /// Persistent install state tracking what Guardian components are set up.
 #[derive(Debug, Serialize, Deserialize)]
@@ -12,6 +23,8 @@ pub struct InstallState {
     pub ca_cert_path: Option<PathBuf>,
     pub interception_enabled: bool,
     pub service_installed: bool,
+    #[serde(default)]
+    pub runtime_trust: RuntimeTrustState,
 }
 
 impl InstallState {
@@ -23,6 +36,7 @@ impl InstallState {
             ca_cert_path: None,
             interception_enabled: false,
             service_installed: false,
+            runtime_trust: RuntimeTrustState::default(),
         }
     }
 

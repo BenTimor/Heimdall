@@ -1,8 +1,10 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use tracing::{info, warn};
 
 use super::PlatformOps;
+use crate::state::RuntimeTrustState;
 
 const SERVICE_NAME: &str = "guardian-agent";
 const UNIT_FILE_PATH: &str = "/etc/systemd/system/guardian-agent.service";
@@ -216,6 +218,148 @@ WantedBy=multi-user.target
         info!("Guardian agent service stopped");
         Ok(())
     }
+
+    fn configure_runtime_trust(&self, ca_cert_path: &Path) -> Result<RuntimeTrustState> {
+        let data_dir = guardian_data_dir_linux();
+        std::fs::create_dir_all(&data_dir)
+            .context("creating Guardian data directory")?;
+
+        let guardian_ca_path = data_dir.join("guardian-ca.pem");
+
+        // Copy Guardian CA cert
+        std::fs::copy(ca_cert_path, &guardian_ca_path)
+            .context("copying Guardian CA cert")?;
+        info!(path = %guardian_ca_path.display(), "Copied Guardian CA cert");
+
+        // On Linux, update-ca-certificates handles most runtimes.
+        // We only need NODE_EXTRA_CA_CERTS for Node.js.
+        let env_vars = vec![
+            ("NODE_EXTRA_CA_CERTS", guardian_ca_path.to_string_lossy().to_string()),
+        ];
+
+        let mut original_env_vars = HashMap::new();
+
+        for (name, value) in &env_vars {
+            let original = read_etc_environment_var(name);
+            original_env_vars.insert(name.to_string(), original);
+            set_etc_environment_var(name, value)
+                .with_context(|| format!("setting {} in /etc/environment", name))?;
+            info!(var = name, value = value, "Set environment variable in /etc/environment");
+        }
+
+        Ok(RuntimeTrustState {
+            configured: true,
+            ca_bundle_path: None,
+            guardian_ca_path: Some(guardian_ca_path),
+            original_env_vars,
+        })
+    }
+
+    fn remove_runtime_trust(&self, state: &RuntimeTrustState) -> Result<()> {
+        for (name, original) in &state.original_env_vars {
+            match original {
+                Some(value) => {
+                    set_etc_environment_var(name, value)
+                        .with_context(|| format!("restoring {} in /etc/environment", name))?;
+                    info!(var = name, "Restored original environment variable");
+                }
+                None => {
+                    remove_etc_environment_var(name)
+                        .with_context(|| format!("removing {} from /etc/environment", name))?;
+                    info!(var = name, "Removed environment variable from /etc/environment");
+                }
+            }
+        }
+
+        // Delete cert file
+        if let Some(ref path) = state.guardian_ca_path {
+            if path.exists() {
+                std::fs::remove_file(path).ok();
+            }
+        }
+
+        info!("Runtime CA trust removed");
+        Ok(())
+    }
+}
+
+/// Get the Guardian data directory on Linux (~/.config/guardian).
+fn guardian_data_dir_linux() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".config").join("guardian")
+}
+
+/// Read a variable's value from /etc/environment.
+fn read_etc_environment_var(name: &str) -> Option<String> {
+    let contents = std::fs::read_to_string("/etc/environment").ok()?;
+    let prefix = format!("{}=", name);
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&prefix) {
+            let value = &trimmed[prefix.len()..];
+            // Strip surrounding quotes if present
+            let value = value.trim_matches('"').trim_matches('\'');
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+/// Set a variable in /etc/environment (add or update).
+fn set_etc_environment_var(name: &str, value: &str) -> Result<()> {
+    let path = Path::new("/etc/environment");
+    let contents = std::fs::read_to_string(path).unwrap_or_default();
+
+    let prefix = format!("{}=", name);
+    let new_line = format!("{}=\"{}\"", name, value);
+
+    let mut found = false;
+    let mut lines: Vec<String> = contents
+        .lines()
+        .map(|line| {
+            if line.trim().starts_with(&prefix) {
+                found = true;
+                new_line.clone()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+
+    if !found {
+        lines.push(new_line);
+    }
+
+    // Ensure trailing newline
+    let mut output = lines.join("\n");
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+
+    std::fs::write(path, output)
+        .context("writing /etc/environment")?;
+    Ok(())
+}
+
+/// Remove a variable from /etc/environment.
+fn remove_etc_environment_var(name: &str) -> Result<()> {
+    let path = Path::new("/etc/environment");
+    let contents = std::fs::read_to_string(path).unwrap_or_default();
+
+    let prefix = format!("{}=", name);
+    let lines: Vec<&str> = contents
+        .lines()
+        .filter(|line| !line.trim().starts_with(&prefix))
+        .collect();
+
+    let mut output = lines.join("\n");
+    if !output.ends_with('\n') && !output.is_empty() {
+        output.push('\n');
+    }
+
+    std::fs::write(path, output)
+        .context("writing /etc/environment")?;
+    Ok(())
 }
 
 /// Remove all guardian iptables rules by searching for the comment marker.

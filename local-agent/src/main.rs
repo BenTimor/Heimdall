@@ -8,6 +8,7 @@ mod state;
 mod transparent;
 mod tunnel;
 
+use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -242,6 +243,7 @@ fn cmd_install(
     // Install CA certificate
     if !no_cert {
         print!("Installing CA certificate... ");
+        std::io::stdout().flush().ok();
         match ops.install_ca_cert(ca_cert) {
             Ok(()) => {
                 install_state.ca_cert_installed = true;
@@ -256,9 +258,27 @@ fn cmd_install(
         }
     }
 
+    // Configure runtime CA trust (so Python, Node.js, Go, Ruby trust the CA)
+    if !no_cert && install_state.ca_cert_installed {
+        print!("Configuring runtime CA trust... ");
+        std::io::stdout().flush().ok();
+        match ops.configure_runtime_trust(ca_cert) {
+            Ok(trust_state) => {
+                install_state.runtime_trust = trust_state;
+                summary.push("Runtime CA trust configured");
+                println!("done");
+            }
+            Err(e) => {
+                println!("FAILED: {:#}", e);
+                summary.push("Runtime CA trust FAILED");
+            }
+        }
+    }
+
     // Enable traffic interception
     if !no_interception {
         print!("Enabling traffic interception... ");
+        std::io::stdout().flush().ok();
         match cfg.transparent.method {
             config::InterceptionMethod::Windivert => {
                 // WinDivert captures at packet level at runtime — no install-time proxy needed
@@ -269,6 +289,7 @@ fn cmd_install(
                 // System proxy points to the local CONNECT proxy (speaks HTTP CONNECT)
                 let proxy_port = cfg.local_proxy.port;
                 print!("(system proxy → port {})... ", proxy_port);
+                std::io::stdout().flush().ok();
                 match ops.enable_interception(proxy_port) {
                     Ok(()) => {
                         install_state.interception_enabled = true;
@@ -288,6 +309,7 @@ fn cmd_install(
     if install_service {
         let exe_path = std::env::current_exe().context("getting current exe path")?;
         print!("Installing system service... ");
+        std::io::stdout().flush().ok();
         match ops.install_service(&exe_path, config_path) {
             Ok(()) => {
                 install_state.service_installed = true;
@@ -326,6 +348,17 @@ fn cmd_uninstall(force: bool) -> Result<()> {
                 s.ca_cert_installed = true;
                 s.interception_enabled = true;
                 s.service_installed = true;
+                // For force uninstall, delete all known env vars (can't know originals)
+                let mut original_env_vars = std::collections::HashMap::new();
+                for name in &["SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"] {
+                    original_env_vars.insert(name.to_string(), None);
+                }
+                s.runtime_trust = state::RuntimeTrustState {
+                    configured: true,
+                    ca_bundle_path: None,
+                    guardian_ca_path: None,
+                    original_env_vars,
+                };
                 s
             } else {
                 eprintln!("No install state found. Nothing to uninstall.");
@@ -341,6 +374,7 @@ fn cmd_uninstall(force: bool) -> Result<()> {
     // Disable traffic interception
     if install_state.interception_enabled {
         print!("Disabling traffic interception... ");
+        std::io::stdout().flush().ok();
         match ops.disable_interception() {
             Ok(()) => {
                 summary.push("Traffic interception disabled");
@@ -353,9 +387,26 @@ fn cmd_uninstall(force: bool) -> Result<()> {
         }
     }
 
+    // Remove runtime CA trust (before CA cert removal)
+    if install_state.runtime_trust.configured {
+        print!("Removing runtime CA trust... ");
+        std::io::stdout().flush().ok();
+        match ops.remove_runtime_trust(&install_state.runtime_trust) {
+            Ok(()) => {
+                summary.push("Runtime CA trust removed");
+                println!("done");
+            }
+            Err(e) => {
+                println!("FAILED: {:#}", e);
+                summary.push("Runtime CA trust removal FAILED");
+            }
+        }
+    }
+
     // Uninstall CA certificate
     if install_state.ca_cert_installed {
         print!("Removing CA certificate... ");
+        std::io::stdout().flush().ok();
         match ops.uninstall_ca_cert() {
             Ok(()) => {
                 summary.push("CA certificate removed");
@@ -371,10 +422,12 @@ fn cmd_uninstall(force: bool) -> Result<()> {
     // Uninstall service
     if install_state.service_installed {
         print!("Stopping service... ");
+        std::io::stdout().flush().ok();
         let _ = ops.stop_service();
         println!("done");
 
         print!("Removing system service... ");
+        std::io::stdout().flush().ok();
         match ops.uninstall_service() {
             Ok(()) => {
                 summary.push("System service removed");
