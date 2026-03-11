@@ -524,28 +524,65 @@ fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
     base64_decode(&base64_data)
 }
 
-/// Remove all Guardian CA certificates from the Windows ROOT store.
+/// Remove all Guardian CA certificates from the Windows Root stores.
 /// Returns the number of certificates removed.
 ///
-/// `certutil -delstore` removes one matching cert at a time, so we loop
-/// until no more "Guardian" certs remain. This handles duplicate copies
-/// left by repeated installs.
+/// Uses PowerShell to enumerate both LocalMachine\Root and CurrentUser\Root,
+/// find all certs whose Subject contains "Guardian", and remove them by
+/// thumbprint.  This is more reliable than `certutil -delstore` which has
+/// inconsistent substring matching and doesn't touch CurrentUser.
 fn purge_guardian_certs_from_root() -> usize {
-    let mut removed = 0;
-    // Safety limit to prevent infinite loop if certutil behaves unexpectedly.
-    for _ in 0..50 {
-        let output = std::process::Command::new("certutil")
-            .args(["-f", "-delstore", "ROOT", "Guardian"])
-            .output();
-        match output {
-            Ok(o) if o.status.success() => {
-                removed += 1;
-                debug!("Removed a Guardian CA certificate from ROOT store");
+    let ps_script = r#"
+$removed = 0
+foreach ($loc in @('LocalMachine', 'CurrentUser')) {
+    try {
+        $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', $loc)
+        $store.Open('ReadWrite')
+        $toRemove = @()
+        foreach ($cert in $store.Certificates) {
+            if ($cert.Subject -match 'Guardian') {
+                $toRemove += $cert
             }
-            _ => break,
+        }
+        foreach ($cert in $toRemove) {
+            $store.Remove($cert)
+            $removed++
+        }
+        $store.Close()
+    } catch { }
+}
+Write-Host $removed
+"#;
+
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", ps_script])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let count: usize = stdout.trim().parse().unwrap_or(0);
+            if count > 0 {
+                debug!(count, "Purged Guardian CA certificates from Root stores");
+            }
+            count
+        }
+        _ => {
+            debug!("PowerShell cert purge failed, falling back to certutil");
+            // Fallback: certutil loop for LocalMachine only
+            let mut removed = 0;
+            for _ in 0..50 {
+                let out = std::process::Command::new("certutil")
+                    .args(["-f", "-delstore", "ROOT", "Guardian"])
+                    .output();
+                match out {
+                    Ok(o) if o.status.success() => removed += 1,
+                    _ => break,
+                }
+            }
+            removed
         }
     }
-    removed
 }
 
 /// Get the Guardian data directory (%APPDATA%\Guardian).
