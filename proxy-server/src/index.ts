@@ -36,7 +36,8 @@ async function main() {
   logger.info({ configPath }, "Configuration loaded");
 
   // Load CA certificate manager with OCSP responder URL (AIA extension)
-  const ocspUrl = `http://127.0.0.1:${config.proxy.port}/ocsp`;
+  const ocspHost = config.proxy.publicHost ?? "127.0.0.1";
+  const ocspUrl = `http://${ocspHost}:${config.proxy.port}/ocsp`;
   let certManager;
   try {
     certManager = loadCertManager(config.ca.certFile, config.ca.keyFile, ocspUrl);

@@ -26,6 +26,9 @@ export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 export const ProxyConfigSchema = z.object({
   port: z.number().int().min(1).max(65535).default(8080),
   host: z.string().default("0.0.0.0"),
+  /** Public IP/hostname reachable by clients — used for OCSP responder URL in MITM certs.
+   *  If not set, falls back to 127.0.0.1 (only works when proxy runs on the same machine). */
+  publicHost: z.string().optional(),
 });
 
 export const CaConfigSchema = z.object({

@@ -10,6 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "generate-ca": "tsx scripts/generate-ca.ts",
+    "generate-tunnel-cert": "tsx scripts/generate-tunnel-cert.ts",
+    "generate-certs": "tsx scripts/generate-ca.ts && tsx scripts/generate-tunnel-cert.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
