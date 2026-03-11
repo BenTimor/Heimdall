@@ -113,7 +113,13 @@ export async function handleMitm(
   } catch (err) {
     logger.debug({ err, target: `${targetHost}:${targetPort}` }, "MITM session error");
   } finally {
-    if (!tlsServer.destroyed) tlsServer.destroy();
+    // Use end() instead of destroy() so that any queued response data
+    // (from forwardToTarget's clientTls.write) is flushed before the
+    // TLS close_notify.  destroy() discards buffered writes immediately,
+    // which causes "Remote end closed connection without response" when
+    // the client sends Connection: close (keepAlive = false → loop exits
+    // right after the write, before the event loop can flush it).
+    if (!tlsServer.destroyed) tlsServer.end();
   }
 }
 
