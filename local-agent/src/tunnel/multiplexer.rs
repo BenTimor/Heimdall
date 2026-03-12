@@ -113,7 +113,7 @@ impl Multiplexer {
             // Local -> tunnel
             let tunnel_tx_clone = tunnel_tx.clone();
             let conn_id_copy = conn_id;
-            let upload = tokio::spawn(async move {
+            let mut upload = tokio::spawn(async move {
                 let mut buf = vec![0u8; 8192];
                 loop {
                     match read_half.read(&mut buf).await {
@@ -137,7 +137,7 @@ impl Multiplexer {
             });
 
             // Tunnel -> local (receive from local_rx channel)
-            let download = tokio::spawn(async move {
+            let mut download = tokio::spawn(async move {
                 while let Some(data) = local_rx.recv().await {
                     if write_half.write_all(&data).await.is_err() {
                         break;
@@ -146,15 +146,26 @@ impl Multiplexer {
             });
 
             // Wait for either direction to finish, then clean up.
-            tokio::select! {
-                _ = upload => {}
-                _ = download => {}
-            }
+            let upload_first = tokio::select! {
+                _ = &mut upload => true,
+                _ = &mut download => false,
+            };
 
-            // Send CLOSE frame
             let close_frame = Frame::new(conn_id, FrameType::Close, Bytes::new());
             let _ = tunnel_tx.send(close_frame).await;
-            connections.remove(&conn_id);
+
+            // Wait for the other direction to drain. Normally the server's
+            // CLOSE causes tunnel_read_loop to remove the connection, ending
+            // the download task. Timeout is a safety net.
+            let _ = tokio::time::timeout(Duration::from_secs(10), async {
+                if upload_first {
+                    let _ = download.await;
+                } else {
+                    let _ = upload.await;
+                }
+            }).await;
+
+            connections.remove(&conn_id);  // no-op if tunnel_read_loop already removed
             debug!(conn_id, "connection bridge closed");
         });
 

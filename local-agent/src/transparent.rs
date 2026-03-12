@@ -61,7 +61,7 @@ async fn handle_transparent(
     mux: Arc<Multiplexer>,
 ) -> Result<()> {
     // Peek at the ClientHello without consuming it from the kernel buffer.
-    let mut buf = [0u8; 1024];
+    let mut buf = [0u8; 4096];
     let n = stream
         .peek(&mut buf)
         .await

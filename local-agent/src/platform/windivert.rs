@@ -5,10 +5,14 @@
 //! and reverses the NAT on response packets. Works for ALL applications
 //! regardless of proxy settings.
 //!
-//! Uses the WinDivert SOCKET layer for PID-based exclusion: connections from
-//! excluded processes (e.g., the proxy server) pass through without NAT.
-//! The SOCKET layer blocks connect() calls until recv(), guaranteeing PID
-//! is recorded before the first SYN packet reaches the NETWORK handler.
+//! Uses the WinDivert SOCKET layer in sniff mode for PID-based exclusion:
+//! connections from excluded processes (e.g., the proxy server) pass through
+//! without NAT. Sniff mode passively observes socket events without blocking
+//! the originating connect() call, avoiding system-wide latency on every new
+//! connection. The trade-off is a small race window where a SYN could reach
+//! the NETWORK handler before the PID mapping is recorded; in practice this
+//! is negligible because the SOCKET event fires before the TCP handshake
+//! completes.
 //!
 //! Requires administrator privileges and the WinDivert driver.
 
@@ -322,9 +326,11 @@ unsafe fn get_raw_handle<L: WinDivertLayerTrait>(wd: &WinDivert<L>) -> isize {
 
 /// SOCKET layer event loop: track PIDs of outbound TCP:443 connections.
 ///
-/// Without the `sniff` flag, `recv()` blocks the originating `connect()` call
-/// until we process the event. This guarantees the PID mapping is in the
-/// DashMap before the corresponding SYN packet reaches the NETWORK handler.
+/// The SOCKET handle is opened with the `sniff` flag, so `recv()` passively
+/// observes socket events without blocking the originating `connect()` call.
+/// This avoids adding latency to every outbound connection system-wide, at the
+/// cost of a small race window where a SYN could arrive at the NETWORK handler
+/// before the PID mapping is recorded. In practice the race is negligible.
 fn run_socket_tracker(
     wd: WinDivert<layer::SocketLayer>,
     pid_map: Arc<DashMap<u16, u32>>,
