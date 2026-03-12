@@ -25,7 +25,11 @@ export function handlePassthrough(
   targetSocket.on("error", (err) => {
     logger.warn({ err, target: `${targetHost}:${targetPort}` }, "Target connection error (passthrough)");
     if (!clientSocket.destroyed) {
-      clientSocket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+      if (options?.tunnelMode) {
+        clientSocket.destroy();
+      } else {
+        clientSocket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+      }
     }
   });
 

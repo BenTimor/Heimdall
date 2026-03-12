@@ -73,6 +73,44 @@ describe("handlePassthrough", () => {
     clientSocket.destroy();
     proxySocket.destroy();
   });
+
+  it("should destroy client socket without writing data in tunnel mode when target fails", async () => {
+    const logger = createMockLogger();
+    const { clientSocket, proxySocket } = await createSocketPair();
+
+    let dataReceived = false;
+    clientSocket.on("data", () => {
+      dataReceived = true;
+    });
+
+    handlePassthrough(proxySocket, "127.0.0.1", 1, logger, { tunnelMode: true });
+
+    // Wait for the proxySocket (passed as clientSocket to handlePassthrough)
+    // to be destroyed — this is the direct effect of the tunnelMode error path.
+    // Then also wait for our clientSocket (other end of the pair) to close.
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timeout waiting for socket close"));
+      }, 5000);
+      const onClose = () => { cleanup(); resolve(); };
+      const onEnd = () => { cleanup(); resolve(); };
+      const cleanup = () => {
+        clearTimeout(timeout);
+        clientSocket.removeListener("close", onClose);
+        clientSocket.removeListener("end", onEnd);
+        proxySocket.removeListener("close", onClose);
+      };
+      clientSocket.on("close", onClose);
+      clientSocket.on("end", onEnd);
+      proxySocket.on("close", onClose);
+    });
+
+    expect(dataReceived).toBe(false);
+
+    clientSocket.destroy();
+    proxySocket.destroy();
+  });
 });
 
 function createSocketPair(): Promise<{ clientSocket: net.Socket; proxySocket: net.Socket }> {
