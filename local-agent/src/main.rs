@@ -315,6 +315,20 @@ fn cmd_install(
                 install_state.service_installed = true;
                 summary.push("System service installed");
                 println!("done");
+
+                // Start the service immediately so the user doesn't need to reboot
+                print!("Starting service... ");
+                std::io::stdout().flush().ok();
+                match ops.start_service() {
+                    Ok(()) => {
+                        summary.push("Service started");
+                        println!("done");
+                    }
+                    Err(e) => {
+                        println!("FAILED: {:#}", e);
+                        summary.push("Service start FAILED (will start on next boot)");
+                    }
+                }
             }
             Err(e) => {
                 println!("FAILED: {:#}", e);
@@ -482,6 +496,7 @@ fn cmd_service(action: ServiceCommand) -> Result<()> {
             let interception = ops.is_interception_active()?;
 
             println!("Service installed: {}", if installed { "yes" } else { "no" });
+            println!("Auto-start: {}", if installed { "enabled" } else { "disabled" });
             println!("Traffic interception: {}", if interception { "active" } else { "inactive" });
 
             if let Some(state) = state::InstallState::load()? {
