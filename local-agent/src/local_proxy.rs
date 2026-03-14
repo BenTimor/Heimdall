@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info, warn};
@@ -21,6 +22,8 @@ pub async fn run_local_proxy(
         .context(format!("binding local proxy on {}", addr))?;
     info!(addr = %addr, "local CONNECT proxy listening");
 
+    let auth_token = config.auth_token.clone();
+
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -28,8 +31,9 @@ pub async fn run_local_proxy(
                     Ok((stream, peer)) => {
                         debug!(peer = %peer, "accepted local connection");
                         let mux = multiplexer.clone();
+                        let auth = auth_token.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connect(stream, mux).await {
+                            if let Err(e) = handle_connect(stream, mux, auth.as_deref()).await {
                                 warn!(peer = %peer, error = %e, "CONNECT handling failed");
                             }
                         });
@@ -49,7 +53,7 @@ pub async fn run_local_proxy(
 }
 
 /// Handle one CONNECT request.
-async fn handle_connect(stream: TcpStream, mux: Arc<Multiplexer>) -> Result<()> {
+async fn handle_connect(stream: TcpStream, mux: Arc<Multiplexer>, auth_token: Option<&str>) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut buf_reader = BufReader::new(reader);
 
@@ -71,12 +75,48 @@ async fn handle_connect(stream: TcpStream, mux: Arc<Multiplexer>) -> Result<()> 
     let target = parts[1];
     let (host, port) = parse_host_port(target)?;
 
-    // Consume remaining headers until empty line.
+    // Consume remaining headers until empty line, collecting them for auth check.
+    let mut headers = Vec::new();
     loop {
         let mut line = String::new();
         buf_reader.read_line(&mut line).await?;
         if line.trim().is_empty() {
             break;
+        }
+        headers.push(line);
+    }
+
+    // Check Proxy-Authorization if auth_token is configured.
+    if let Some(expected_token) = auth_token {
+        let proxy_auth = headers.iter().find_map(|h| {
+            let trimmed = h.trim();
+            if trimmed.to_ascii_lowercase().starts_with("proxy-authorization:") {
+                Some(trimmed["proxy-authorization:".len()..].trim().to_string())
+            } else {
+                None
+            }
+        });
+
+        let authenticated = match proxy_auth {
+            Some(ref auth_value) if auth_value.starts_with("Basic ") => {
+                let encoded = &auth_value["Basic ".len()..];
+                match base64::engine::general_purpose::STANDARD.decode(encoded) {
+                    Ok(decoded_bytes) => {
+                        let decoded = String::from_utf8_lossy(&decoded_bytes);
+                        decoded.as_ref() == expected_token
+                    }
+                    Err(_) => false,
+                }
+            }
+            _ => false,
+        };
+
+        if !authenticated {
+            writer
+                .write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic\r\n\r\n")
+                .await?;
+            warn!("proxy auth failed: missing or invalid Proxy-Authorization header");
+            return Ok(());
         }
     }
 

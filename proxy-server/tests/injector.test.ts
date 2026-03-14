@@ -112,6 +112,20 @@ describe("injectSecrets", () => {
     expect(injections[0].status).toBe("no_config");
   });
 
+  it("replaces duplicate placeholders in a single header value", async () => {
+    const resolver = createMockResolver(async () => "sk-real-key");
+    const { injectedHeaders, injections } = await injectSecrets(
+      "api.openai.com",
+      { Authorization: "__OPENAI_API_KEY__ and __OPENAI_API_KEY__" },
+      secretsConfig,
+      resolver
+    );
+
+    expect(injectedHeaders.Authorization).toBe("sk-real-key and sk-real-key");
+    expect(injections).toHaveLength(2);
+    expect(injections.every((i) => i.status === "injected")).toBe(true);
+  });
+
   it("handles provider returning null", async () => {
     const resolver = createMockResolver(async () => null);
     const { injectedHeaders, injections } = await injectSecrets(

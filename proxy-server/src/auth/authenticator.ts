@@ -1,5 +1,8 @@
 import crypto from "node:crypto";
 import type { AuthConfig } from "../config/schema.js";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger({ name: "authenticator" });
 
 export interface AuthResult {
   authenticated: boolean;
@@ -12,6 +15,9 @@ export class Authenticator {
 
   constructor(config: AuthConfig) {
     this.config = config;
+    if (!config.enabled) {
+      logger.warn("Proxy authentication is DISABLED — all requests will be accepted without credentials");
+    }
   }
 
   authenticate(proxyAuthHeader?: string): AuthResult {

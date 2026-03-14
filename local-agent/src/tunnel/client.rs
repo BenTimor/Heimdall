@@ -2,14 +2,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use base64::Engine;
 use bytes::Bytes;
 use futures_util::SinkExt;
-use rustls::pki_types::ServerName;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::DigitallySignedStruct;
+use sha2::{Sha256, Digest};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
 use tracing::{info, warn};
+use zeroize::Zeroizing;
 
 use crate::config::{AuthConfig, ReconnectConfig, ServerConfig};
 use crate::tunnel::protocol::{Frame, FrameCodec, FrameType};
@@ -17,9 +22,69 @@ use crate::tunnel::protocol::{Frame, FrameCodec, FrameType};
 /// Type alias for a framed TLS connection carrying protocol frames.
 pub type FramedTunnel = Framed<tokio_rustls::client::TlsStream<TcpStream>, FrameCodec>;
 
+/// Custom TLS certificate verifier that delegates to the default WebPKI verifier
+/// and additionally checks that the end-entity certificate matches a pinned SHA-256 hash.
+#[derive(Debug)]
+struct PinningVerifier {
+    inner: Arc<dyn ServerCertVerifier>,
+    expected_pin: String, // base64-encoded SHA-256 hash (without "sha256/" prefix)
+}
+
+impl ServerCertVerifier for PinningVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> std::result::Result<ServerCertVerified, rustls::Error> {
+        // First delegate to the inner (WebPKI) verifier
+        self.inner.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)?;
+
+        // Compute SHA-256 of the end-entity certificate's DER bytes
+        let mut hasher = Sha256::new();
+        hasher.update(end_entity.as_ref());
+        let hash = hasher.finalize();
+        let actual_pin = base64::engine::general_purpose::STANDARD.encode(hash);
+
+        if actual_pin != self.expected_pin {
+            return Err(rustls::Error::General(format!(
+                "certificate pin mismatch: expected {}, got {}",
+                self.expected_pin, actual_pin
+            )));
+        }
+
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+}
+
 /// Build a rustls ClientConfig. Uses system root certs (via webpki-roots) by default,
-/// or loads a custom CA cert if specified.
-fn build_tls_config(server: &ServerConfig) -> Result<Arc<rustls::ClientConfig>> {
+/// or loads a custom CA cert if specified. If `cert_pin` is provided (format: "sha256/<base64>"),
+/// wraps the verifier with a PinningVerifier.
+fn build_tls_config(server: &ServerConfig, cert_pin: Option<String>) -> Result<Arc<rustls::ClientConfig>> {
     let mut root_store = rustls::RootCertStore::empty();
 
     if let Some(ca_path) = &server.ca_cert {
@@ -35,9 +100,30 @@ fn build_tls_config(server: &ServerConfig) -> Result<Arc<rustls::ClientConfig>> 
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     }
 
-    let config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
+    let config = if let Some(pin) = cert_pin {
+        let pin_hash = pin.strip_prefix("sha256/")
+            .ok_or_else(|| anyhow::anyhow!("cert_pin must start with 'sha256/', got: {}", pin))?
+            .to_string();
+
+        let default_verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(root_store))
+            .build()
+            .context("building WebPKI verifier")?;
+
+        let pinning_verifier = PinningVerifier {
+            inner: default_verifier,
+            expected_pin: pin_hash,
+        };
+
+        rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(pinning_verifier))
+            .with_no_client_auth()
+    } else {
+        rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth()
+    };
+
     Ok(Arc::new(config))
 }
 
@@ -47,7 +133,7 @@ pub async fn connect_and_auth(
     server: &ServerConfig,
     auth: &AuthConfig,
 ) -> Result<FramedTunnel> {
-    let tls_config = build_tls_config(server)?;
+    let tls_config = build_tls_config(server, server.cert_pin.clone())?;
     let connector = TlsConnector::from(tls_config);
 
     let server_name = server.host.parse::<std::net::IpAddr>()
@@ -68,8 +154,8 @@ pub async fn connect_and_auth(
     let mut framed = Framed::new(tls, FrameCodec::new());
 
     // Send AUTH frame: "machine_id:token"
-    let auth_payload = format!("{}:{}", auth.machine_id, auth.token);
-    let auth_frame = Frame::new(0, FrameType::Auth, Bytes::from(auth_payload));
+    let auth_payload = Zeroizing::new(format!("{}:{}", auth.machine_id, auth.token));
+    let auth_frame = Frame::new(0, FrameType::Auth, Bytes::from((*auth_payload).clone()));
     framed.send(auth_frame).await.context("sending AUTH frame")?;
 
     // Wait for AUTH_OK with timeout

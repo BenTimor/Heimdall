@@ -17,6 +17,7 @@ pub struct AgentConfig {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub transparent: TransparentConfig,
+    pub tunnel: Option<TunnelConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -24,6 +25,8 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub ca_cert: Option<PathBuf>,
+    /// TLS certificate pin in "sha256/<base64-encoded-hash>" format.
+    pub cert_pin: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -38,6 +41,8 @@ pub struct LocalProxyConfig {
     pub port: u16,
     #[serde(default = "default_localhost")]
     pub host: String,
+    /// Optional auth token for local CONNECT proxy (Proxy-Authorization: Basic).
+    pub auth_token: Option<String>,
 }
 
 impl Default for LocalProxyConfig {
@@ -45,6 +50,7 @@ impl Default for LocalProxyConfig {
         Self {
             port: default_proxy_port(),
             host: default_localhost(),
+            auth_token: None,
         }
     }
 }
@@ -98,6 +104,16 @@ impl Default for LoggingConfig {
             level: default_log_level(),
         }
     }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct TunnelConfig {
+    #[serde(default = "default_max_connections")]
+    pub max_connections: u32,
+}
+
+fn default_max_connections() -> u32 {
+    1000
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -175,7 +191,7 @@ impl AgentConfig {
         let contents =
             std::fs::read_to_string(path).context(format!("reading config file: {}", path.display()))?;
         let config: AgentConfig =
-            serde_yaml::from_str(&contents).context("parsing config YAML")?;
+            serde_yml::from_str(&contents).context("parsing config YAML")?;
         Ok(config)
     }
 }

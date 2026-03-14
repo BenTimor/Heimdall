@@ -15,6 +15,8 @@ cargo run -- status       # query health endpoint
 cargo run -- install      # install CA cert + enable interception
 cargo run -- uninstall    # reverse all install actions
 cargo run -- service start/stop/status  # manage system service
+cargo install cargo-audit   # one-time install
+cargo audit                 # check for dependency vulnerabilities
 ```
 
 ## Architecture

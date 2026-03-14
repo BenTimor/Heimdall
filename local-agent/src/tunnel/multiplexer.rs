@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use bytes::Bytes;
 use dashmap::DashMap;
 use futures_util::stream::SplitSink;
@@ -34,6 +34,7 @@ pub struct Multiplexer {
     next_conn_id: AtomicU32,
     tunnel_tx: TunnelSender,
     last_heartbeat: Arc<tokio::sync::Mutex<Instant>>,
+    max_connections: u32,
 }
 
 /// Status snapshot for health reporting.
@@ -46,7 +47,7 @@ impl Multiplexer {
     /// Create a new multiplexer from a connected+authenticated tunnel.
     /// Spawns the tunnel read loop and heartbeat sender.
     /// Returns the multiplexer handle.
-    pub fn start(framed: FramedTunnel, shutdown: tokio::sync::watch::Receiver<bool>) -> Arc<Self> {
+    pub fn start(framed: FramedTunnel, shutdown: tokio::sync::watch::Receiver<bool>, max_connections: u32) -> Arc<Self> {
         let (write_half, read_half) = framed.split();
 
         let (tunnel_tx, tunnel_rx) = mpsc::channel::<Frame>(256);
@@ -59,6 +60,7 @@ impl Multiplexer {
             next_conn_id: AtomicU32::new(1),
             tunnel_tx: tunnel_tx.clone(),
             last_heartbeat: last_heartbeat.clone(),
+            max_connections,
         });
 
         // Spawn tunnel writer task: drains tunnel_rx and writes to the tunnel.
@@ -90,6 +92,15 @@ impl Multiplexer {
         host: &str,
         port: u16,
     ) -> Result<u32> {
+        if self.connections.len() >= self.max_connections as usize {
+            warn!(
+                active = self.connections.len(),
+                max = self.max_connections,
+                "connection limit reached, rejecting new connection"
+            );
+            bail!("connection limit reached ({} active, max {})", self.connections.len(), self.max_connections);
+        }
+
         let conn_id = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
 
         let (local_tx, mut local_rx) = mpsc::channel::<Bytes>(64);
@@ -184,6 +195,42 @@ impl Multiplexer {
             active_connections: self.connections.len(),
             last_heartbeat: *self.last_heartbeat.lock().await,
         }
+    }
+
+    /// Gracefully drain all active connections.
+    /// Sends CLOSE frames for each connection, then waits up to 5 seconds
+    /// for connections to drain before clearing any remaining.
+    pub async fn shutdown(&self) {
+        let conn_ids: Vec<u32> = self.connections.iter().map(|entry| *entry.key()).collect();
+        if conn_ids.is_empty() {
+            return;
+        }
+
+        info!(active = conn_ids.len(), "draining connections for shutdown");
+
+        for conn_id in &conn_ids {
+            let close_frame = Frame::new(*conn_id, FrameType::Close, Bytes::new());
+            if self.tunnel_tx.send(close_frame).await.is_err() {
+                debug!("tunnel_tx closed during shutdown drain");
+                break;
+            }
+        }
+
+        // Wait up to 5 seconds for connections to drain (polled every 100ms).
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline && !self.connections.is_empty() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        if !self.connections.is_empty() {
+            warn!(
+                remaining = self.connections.len(),
+                "shutdown drain timeout, clearing remaining connections"
+            );
+            self.connections.clear();
+        }
+
+        info!("connection drain complete");
     }
 
     // --- Internal tasks ---

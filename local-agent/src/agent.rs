@@ -32,12 +32,12 @@ pub async fn run(config: AgentConfig) -> Result<()> {
     let started_at = Instant::now();
 
     // Start multiplexer
-    let multiplexer = Multiplexer::start(framed, shutdown_rx.clone());
+    let max_connections = config.tunnel.as_ref().map_or(1000, |t| t.max_connections);
+    let multiplexer = Multiplexer::start(framed, shutdown_rx.clone(), max_connections);
 
     // Start health endpoint
     let health_state = Arc::new(HealthState {
         multiplexer: multiplexer.clone(),
-        machine_id: config.auth.machine_id.clone(),
         started_at,
     });
 
@@ -76,6 +76,39 @@ pub async fn run(config: AgentConfig) -> Result<()> {
         None
     };
 
+    // On Linux, re-apply iptables interception rules if they were lost after reboot.
+    // iptables rules are not persistent by default, so if the agent was installed
+    // with interception enabled, we need to re-apply them on startup.
+    #[cfg(target_os = "linux")]
+    if config.transparent.enabled {
+        match crate::state::InstallState::load() {
+            Ok(Some(state)) if state.interception_enabled => {
+                let platform = crate::platform::platform();
+                match platform.is_interception_active() {
+                    Ok(false) => {
+                        if let Err(e) = platform.enable_interception(config.transparent.port) {
+                            warn!(error = %e, "failed to re-apply interception rules");
+                        } else {
+                            info!("Re-applied interception rules (lost after reboot)");
+                        }
+                    }
+                    Ok(true) => {
+                        // Rules are already active, nothing to do.
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "failed to check interception status");
+                    }
+                }
+            }
+            Ok(_) => {
+                // No state or interception not enabled — skip.
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to load install state for iptables check");
+            }
+        }
+    }
+
     // On Windows, optionally start WinDivert packet-level interception.
     // Run on a dedicated thread: the main thread's stack is shared with the
     // async runtime polling chain, and WinDivert's kernel handle creation +
@@ -107,6 +140,9 @@ pub async fn run(config: AgentConfig) -> Result<()> {
         .context("waiting for ctrl-c")?;
 
     info!("shutting down...");
+
+    // Gracefully drain active connections before signaling shutdown
+    multiplexer.shutdown().await;
 
     // Stop WinDivert before signaling async tasks (it uses OS threads, not tokio)
     #[cfg(target_os = "windows")]

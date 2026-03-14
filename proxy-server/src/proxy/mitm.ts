@@ -7,7 +7,13 @@ import type { ServerConfig } from "../config/schema.js";
 import type { AuditLogger, AuditEntry } from "../audit/audit-logger.js";
 import type { Logger } from "../utils/logger.js";
 import { injectSecrets } from "../injection/injector.js";
-import { parseHttpRequest, serializeHttpRequest, isKeepAlive } from "./http-parser.js";
+import {
+  parseHttpHeaders,
+  pipeBody,
+  serializeHttpHeaders,
+  isKeepAlive,
+} from "./http-parser.js";
+import type { SocketReader, BodyInfo } from "./http-parser.js";
 
 export interface MitmDeps {
   certManager: CertManager;
@@ -66,19 +72,19 @@ export async function handleMitm(
   try {
     let keepAlive = true;
     while (keepAlive) {
-      const req = await parseHttpRequest(tlsServer);
-      if (!req) break; // Connection closed
+      const parsed = await parseHttpHeaders(tlsServer);
+      if (!parsed) break; // Connection closed
 
-      keepAlive = isKeepAlive(req.httpVersion, req.headers);
+      keepAlive = isKeepAlive(parsed.httpVersion, parsed.headers);
 
       // Remove hop-by-hop headers that shouldn't be forwarded
-      delete req.headers["proxy-authorization"];
-      delete req.headers["proxy-connection"];
+      delete parsed.headers["proxy-authorization"];
+      delete parsed.headers["proxy-connection"];
 
       // Inject secrets into headers
       const { injectedHeaders, injections } = await injectSecrets(
         targetHost,
-        req.headers,
+        parsed.headers,
         config.secrets,
         resolver,
         logger,
@@ -92,7 +98,7 @@ export async function handleMitm(
       const auditEntry: AuditEntry = {
         timestamp: new Date().toISOString(),
         machineId,
-        method: req.method,
+        method: parsed.method,
         target: `${targetHost}:${targetPort}`,
         injectedSecrets: injectedNames,
         action: injectedNames.length > 0 ? "injected" : "passthrough",
@@ -101,12 +107,13 @@ export async function handleMitm(
 
       // Forward to real target — force Connection: close so the target
       // closes the socket after responding (simplifies response reading)
-      req.headers = injectedHeaders;
-      req.headers["connection"] = "close";
-      const serialized = serializeHttpRequest(req);
+      parsed.headers = injectedHeaders;
+      parsed.headers["connection"] = "close";
+      const headerData = serializeHttpHeaders(parsed);
 
       await forwardToTarget(
-        tlsServer, targetHost, targetPort, serialized, logger,
+        tlsServer, targetHost, targetPort, headerData,
+        parsed.bodyInfo, parsed.reader, logger,
         deps.targetTlsOptions,
       );
     }
@@ -124,14 +131,16 @@ export async function handleMitm(
 }
 
 /**
- * Open a TLS connection to the real target, send the request, and pipe
- * the response back to the client.
+ * Open a TLS connection to the real target, send the request headers,
+ * stream the request body, then pipe the response back to the client.
  */
 function forwardToTarget(
   clientTls: tls.TLSSocket,
   targetHost: string,
   targetPort: number,
-  requestData: Buffer,
+  headerData: Buffer,
+  bodyInfo: BodyInfo,
+  reader: SocketReader,
   logger: Logger,
   extraTlsOptions?: tls.ConnectionOptions,
 ): Promise<void> {
@@ -143,25 +152,26 @@ function forwardToTarget(
         servername: targetHost,
         ...extraTlsOptions,
       },
-      () => {
-        targetSocket.write(requestData);
+      async () => {
+        // Write serialized headers to the target
+        targetSocket.write(headerData);
+
+        // Stream the request body to the target
+        try {
+          await pipeBody(reader, bodyInfo, targetSocket);
+        } catch (err) {
+          logger.debug({ err, target: `${targetHost}:${targetPort}` }, "Error piping request body");
+          if (!targetSocket.destroyed) targetSocket.destroy();
+          resolve();
+          return;
+        }
+
+        // Now stream the response back to the client
+        targetSocket.pipe(clientTls, { end: false });
       },
     );
 
-    // Buffer the full response then write to client
-    const chunks: Buffer[] = [];
-
-    targetSocket.on("data", (chunk: Buffer) => {
-      chunks.push(chunk);
-    });
-
     targetSocket.on("end", () => {
-      if (chunks.length > 0) {
-        const responseData = Buffer.concat(chunks);
-        if (!clientTls.destroyed) {
-          clientTls.write(responseData);
-        }
-      }
       resolve();
     });
 

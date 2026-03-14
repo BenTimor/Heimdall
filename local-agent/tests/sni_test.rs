@@ -275,3 +275,33 @@ fn test_session_id_present() {
     let hostname = extract_sni(&data).expect("should extract SNI with session ID present");
     assert_eq!(hostname, "session-id.example.com");
 }
+
+#[test]
+fn test_record_length_exceeds_max() {
+    // Build a valid ClientHello, then tamper the TLS record length field
+    // (bytes 3-4) to exceed the 16384 byte limit.
+    let mut data = build_client_hello("example.com");
+    // Set record length to 16385 (0x4001) — one over the max
+    data[3] = 0x40;
+    data[4] = 0x01;
+    let err = extract_sni(&data).unwrap_err();
+    assert!(
+        matches!(err, SniError::BufferTooShort { .. }),
+        "expected BufferTooShort for oversized record length, got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_hostname_exceeds_253_bytes() {
+    // Build a ClientHello with a hostname longer than 253 characters.
+    // DNS labels are max 253 chars total — anything longer is invalid.
+    let long_hostname: String = "a".repeat(254);
+    let data = build_client_hello(&long_hostname);
+    let err = extract_sni(&data).unwrap_err();
+    assert!(
+        matches!(err, SniError::InvalidHostname),
+        "expected InvalidHostname for hostname > 253 bytes, got: {:?}",
+        err
+    );
+}

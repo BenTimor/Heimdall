@@ -21,6 +21,10 @@ cargo build --release
 cargo run -- run          # start agent
 cargo run -- install --ca-cert path/to/ca.pem  # install CA + interception
 cargo run -- uninstall    # reverse install
+
+# Dependency auditing
+cd local-agent && cargo audit    # check Rust deps for vulnerabilities
+cd proxy-server && pnpm audit    # check Node.js deps for vulnerabilities
 ```
 
 ## Repository Structure

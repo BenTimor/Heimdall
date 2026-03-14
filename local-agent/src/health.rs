@@ -16,7 +16,6 @@ use crate::tunnel::multiplexer::Multiplexer;
 /// Shared state for the health endpoint.
 pub struct HealthState {
     pub multiplexer: Arc<Multiplexer>,
-    pub machine_id: String,
     pub started_at: Instant,
 }
 
@@ -52,7 +51,6 @@ async fn health_handler(State(state): State<Arc<HealthState>>) -> Json<Value> {
 
     Json(json!({
         "status": "ok",
-        "machine_id": state.machine_id,
         "tunnel_uptime_secs": uptime_secs,
         "active_connections": status.active_connections,
         "last_heartbeat_secs_ago": last_hb_ago_secs,

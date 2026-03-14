@@ -81,6 +81,16 @@ impl InstallState {
             .context("serializing install state")?;
         std::fs::write(&path, json)
             .context("writing install state")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .context("setting state file permissions")?;
+            if let Some(parent) = path.parent() {
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                    .context("setting state directory permissions")?;
+            }
+        }
         Ok(())
     }
 

@@ -46,7 +46,7 @@ export async function injectSecrets(
         "Domain mismatch — refusing to inject secret (possible exfiltration)"
       );
       // Remove the placeholder to avoid leaking secret names
-      injectedHeaders[headerName] = injectedHeaders[headerName].replace(
+      injectedHeaders[headerName] = injectedHeaders[headerName].replaceAll(
         placeholder,
         ""
       );
@@ -69,7 +69,7 @@ export async function injectSecrets(
       continue;
     }
 
-    injectedHeaders[headerName] = injectedHeaders[headerName].replace(
+    injectedHeaders[headerName] = injectedHeaders[headerName].replaceAll(
       placeholder,
       value
     );

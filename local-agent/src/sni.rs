@@ -45,6 +45,16 @@ pub fn extract_sni(buf: &[u8]) -> Result<String, SniError> {
         return Err(SniError::NotTlsHandshake);
     }
 
+    // Record length check: bytes 3-4 are the record length (u16 BE).
+    // TLS record payload must not exceed 16384 bytes (2^14, per RFC 8446 Section 5.1).
+    let record_length = read_u16_be(buf, 3);
+    if record_length > 16384 {
+        return Err(SniError::BufferTooShort {
+            needed: 16384,
+            available: record_length as usize,
+        });
+    }
+
     // 2. Handshake type at offset 5
     check_len(buf, 5, 1)?;
     if buf[5] != 0x01 {
@@ -148,6 +158,11 @@ fn parse_server_name_extension(data: &[u8]) -> Result<String, SniError> {
     }
     let name_len = read_u16_be(data, pos) as usize;
     pos += 2;
+
+    // DNS hostnames must not exceed 253 characters (RFC 1035).
+    if name_len > 253 {
+        return Err(SniError::InvalidHostname);
+    }
 
     // hostname bytes
     if data.len() < pos + name_len {

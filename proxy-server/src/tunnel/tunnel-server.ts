@@ -236,7 +236,18 @@ export class TunnelServer {
   }
 
   private handleNewConnection(session: AgentSession, frame: Frame): void {
-    const { logger, proxyServer } = this.deps;
+    const { logger, proxyServer, tunnelConfig } = this.deps;
+
+    // Enforce per-session connection limit
+    const maxConns = tunnelConfig.maxConnectionsPerSession;
+    if (session.activeConnections.size >= maxConns) {
+      logger.warn(
+        { machineId: session.machineId, activeConnections: session.activeConnections.size, maxConnectionsPerSession: maxConns },
+        "Connection limit reached for session",
+      );
+      session.socket.write(encodeFrame(frame.connId, FrameType.CLOSE));
+      return;
+    }
 
     // Payload: "host:port"
     const target = frame.payload.toString("utf-8");

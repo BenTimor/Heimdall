@@ -69,6 +69,7 @@ export const TunnelConfigSchema = z.object({
   }),
   heartbeatIntervalMs: z.number().int().min(1000).default(30000),
   heartbeatTimeoutMs: z.number().int().min(2000).default(90000),
+  maxConnectionsPerSession: z.number().positive().default(1000),
 });
 
 export type TunnelConfig = z.infer<typeof TunnelConfigSchema>;
