@@ -565,7 +565,7 @@ async function renderSecretsView(el) {
           <th>Name</th>
           <th>Provider</th>
           <th>Path</th>
-          <th>Has Value</th>
+          <th>Stored Locally</th>
           <th>Allowed Domains</th>
           <th>Actions</th>
         </tr>
