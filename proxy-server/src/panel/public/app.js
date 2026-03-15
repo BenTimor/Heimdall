@@ -625,10 +625,10 @@ function secretFormHtml(secret) {
         <input type="text" id="sf-field" placeholder="e.g. api_key (for JSON secrets)" value="${esc(s.field)}">
         <p class="form-hint">JSON field within the secret (AWS only)</p>
       </div>
-      <div class="form-group" id="sf-value-group" style="display:${s.provider === 'stored' ? 'block' : 'none'}">
+      <div class="form-group" id="sf-value-group" style="display:${s.provider === 'stored' || s.provider === 'aws' ? 'block' : 'none'}">
         <label for="sf-value">Secret Value</label>
         <input type="password" id="sf-value" placeholder="${isEdit ? '(leave empty to keep current)' : 'Enter secret value'}">
-        <p class="form-hint">Will be encrypted at rest</p>
+        <p class="form-hint" id="sf-value-hint">${s.provider === 'aws' ? 'Optional — will be written directly to AWS Secrets Manager' : 'Will be encrypted at rest'}</p>
       </div>
       <div class="form-group">
         <label for="sf-domains">Allowed Domains</label>
@@ -643,7 +643,13 @@ window._onProviderChange = function () {
   const valueGroup = document.getElementById('sf-value-group');
   const pathGroup = document.getElementById('sf-path-group');
   const fieldGroup = document.getElementById('sf-field-group');
-  if (valueGroup) valueGroup.style.display = provider === 'stored' ? 'block' : 'none';
+  if (valueGroup) valueGroup.style.display = (provider === 'stored' || provider === 'aws') ? 'block' : 'none';
+  const valueHint = document.getElementById('sf-value-hint');
+  if (valueHint) {
+    valueHint.textContent = provider === 'aws'
+      ? 'Optional — will be written directly to AWS Secrets Manager'
+      : 'Will be encrypted at rest';
+  }
   if (pathGroup) {
     const label = pathGroup.querySelector('label');
     const hint = pathGroup.querySelector('.form-hint');
@@ -692,13 +698,12 @@ window._submitSecret = async function (editId) {
   if (!provider) { showToast('Provider is required', 'error'); return; }
 
   const payload = { name, provider, path, field, allowedDomains };
-  if (provider === 'stored' && value) payload.value = value;
-  if (provider !== 'stored') { delete payload.value; }
+  if ((provider === 'stored' || provider === 'aws') && value) payload.value = value;
 
   if (editId) {
     // Edit — don't send name
     delete payload.name;
-    if (provider === 'stored' && !value) delete payload.value; // keep existing
+    if ((provider === 'stored' || provider === 'aws') && !value) delete payload.value; // keep existing
     const data = await api('PUT', `/secrets/${editId}`, payload);
     if (data) {
       closeModal();

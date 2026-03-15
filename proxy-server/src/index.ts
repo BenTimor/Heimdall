@@ -79,8 +79,11 @@ async function main() {
   const providers = new Map<string, SecretProvider>();
   providers.set("env", new EnvProvider());
 
-  if (Object.values(config.secrets).some((s) => s.provider === "aws")) {
-    providers.set("aws", new AwsProvider(config.aws.region));
+  // Hoist AWS provider — needed for panel secret writes even if no YAML secrets use AWS
+  let awsProvider: AwsProvider | undefined;
+  if (Object.values(config.secrets).some((s) => s.provider === "aws") || panelConfig?.enabled) {
+    awsProvider = new AwsProvider(config.aws.region);
+    providers.set("aws", awsProvider);
     logger.info({ region: config.aws.region }, "AWS Secrets Manager provider enabled");
   }
 
@@ -169,6 +172,7 @@ async function main() {
         proxy.updateSecretsConfig(buildSecretsConfig());
         logger.info("Secrets config reloaded from database");
       },
+      awsProvider,
     });
     panelStop = panel.stop;
   }

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
 import type { PanelConfig } from "../config/schema.js";
 import type { Logger } from "../utils/logger.js";
+import type { AwsProvider } from "../secrets/aws-provider.js";
 import { validateSession } from "./auth.js";
 import { ensureDefaultAdmin, cleanExpiredSessions } from "./auth.js";
 import { registerAuthRoutes } from "./routes/auth.js";
@@ -24,6 +25,7 @@ export interface PanelServerDeps {
   proxyPort: number;
   tunnelPort?: number;
   reloadSecrets: () => void;
+  awsProvider?: AwsProvider;
 }
 
 export async function startPanelServer(deps: PanelServerDeps): Promise<{ stop: () => Promise<void> }> {
@@ -86,7 +88,7 @@ export async function startPanelServer(deps: PanelServerDeps): Promise<{ stop: (
   // Register API routes
   registerAuthRoutes(app, db, config, loginAttempts);
   registerClientRoutes(app, db, deps.reloadSecrets);
-  registerSecretRoutes(app, db, deps.encryptionKey, deps.reloadSecrets);
+  registerSecretRoutes(app, db, deps.encryptionKey, deps.reloadSecrets, deps.awsProvider);
   registerAuditRoutes(app, db);
   registerSystemRoutes(app, config, deps.proxyPort, deps.tunnelPort);
 
