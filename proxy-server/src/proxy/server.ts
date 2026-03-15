@@ -2,12 +2,12 @@ import * as http from "node:http";
 import * as tls from "node:tls";
 import type { Socket } from "node:net";
 import forge from "node-forge";
-import type { ServerConfig } from "../config/schema.js";
+import type { ServerConfig, SecretConfig } from "../config/schema.js";
 import type { CertManager } from "./cert-manager.js";
 import type { SecretResolver } from "../secrets/resolver.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import type { Logger } from "../utils/logger.js";
-import { Authenticator } from "../auth/authenticator.js";
+import type { Authenticator } from "../auth/authenticator.js";
 import { matchesAnyDomain } from "../utils/domain-matcher.js";
 import { handlePassthrough } from "./passthrough.js";
 import { handleMitm, type MitmDeps } from "./mitm.js";
@@ -18,6 +18,7 @@ export interface ProxyServerDeps {
   certManager: CertManager;
   resolver: SecretResolver;
   auditLogger: AuditLogger;
+  authenticator: Authenticator;
   logger: Logger;
   /** Extra TLS options for outbound MITM connections (e.g. for testing) */
   targetTlsOptions?: tls.ConnectionOptions;
@@ -31,12 +32,14 @@ export class ProxyServer {
   private server: http.Server;
   private config: ServerConfig;
   private authenticator: Authenticator;
+  private secretsConfig: Record<string, SecretConfig>;
   private deps: ProxyServerDeps;
 
   constructor(deps: ProxyServerDeps) {
     this.deps = deps;
     this.config = deps.config;
-    this.authenticator = new Authenticator(this.config.auth);
+    this.authenticator = deps.authenticator;
+    this.secretsConfig = { ...deps.config.secrets };
 
     this.server = http.createServer((req, res) => {
       this.handleHttpRequest(req, res);
@@ -230,7 +233,7 @@ export class ProxyServer {
       const mitmDeps: MitmDeps = {
         certManager: this.deps.certManager,
         resolver: this.deps.resolver,
-        config: this.config,
+        secretsConfig: this.secretsConfig,
         auditLogger: this.deps.auditLogger,
         logger,
         targetTlsOptions: this.deps.targetTlsOptions,
@@ -244,8 +247,13 @@ export class ProxyServer {
   /**
    * Check if any configured secret is bound to this domain.
    */
+  /** Reload secrets config from an external source (e.g. panel DB merge). */
+  updateSecretsConfig(newSecrets: Record<string, SecretConfig>): void {
+    this.secretsConfig = newSecrets;
+  }
+
   private hasSecretsForDomain(hostname: string): boolean {
-    for (const secretConfig of Object.values(this.config.secrets)) {
+    for (const secretConfig of Object.values(this.secretsConfig)) {
       if (matchesAnyDomain(hostname, secretConfig.allowedDomains)) {
         return true;
       }
@@ -287,7 +295,7 @@ export class ProxyServer {
       const mitmDeps: MitmDeps = {
         certManager: this.deps.certManager,
         resolver: this.deps.resolver,
-        config: this.config,
+        secretsConfig: this.secretsConfig,
         auditLogger: this.deps.auditLogger,
         logger,
         targetTlsOptions: this.deps.targetTlsOptions,

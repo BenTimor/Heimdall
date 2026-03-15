@@ -10,6 +10,8 @@ import { SecretResolver } from "../../src/secrets/resolver.js";
 import { SecretCache } from "../../src/secrets/cache.js";
 import { EnvProvider } from "../../src/secrets/env-provider.js";
 import { AuditLogger } from "../../src/audit/audit-logger.js";
+import { Authenticator } from "../../src/auth/authenticator.js";
+import { ConfigAuthBackend } from "../../src/auth/config-backend.js";
 import type { ServerConfig } from "../../src/config/schema.js";
 import type { Logger } from "../../src/utils/logger.js";
 
@@ -291,11 +293,14 @@ describe("Proxy E2E", () => {
       logging: { level: "silent", audit: { enabled: false } },
     };
 
+    const authenticator = new Authenticator({ enabled: config.auth.enabled }, new ConfigAuthBackend(config.auth));
+
     proxy = new ProxyServer({
       config,
       certManager,
       resolver,
       auditLogger,
+      authenticator,
       logger,
       targetTlsOptions: { rejectUnauthorized: false },
     });

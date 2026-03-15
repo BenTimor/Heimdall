@@ -5,6 +5,7 @@ import forge from "node-forge";
 import { TunnelServer } from "../src/tunnel/tunnel-server.js";
 import { encodeFrame, FrameType, FrameDecoder } from "../src/tunnel/protocol.js";
 import { Authenticator } from "../src/auth/authenticator.js";
+import { ConfigAuthBackend } from "../src/auth/config-backend.js";
 import type { ProxyServer } from "../src/proxy/server.js";
 import type { TunnelConfig } from "../src/config/schema.js";
 import type { Logger } from "../src/utils/logger.js";
@@ -76,10 +77,11 @@ describe("TunnelServer", () => {
       heartbeatTimeoutMs: 120000,
     };
 
-    const authenticator = new Authenticator({
+    const authConfig = {
       enabled: true,
       clients: [{ machineId: "agent-1", token: "secret-token" }],
-    });
+    };
+    const authenticator = new Authenticator({ enabled: true }, new ConfigAuthBackend(authConfig));
 
     const mockProxy = {
       handleTunnelConnection: handleTunnelConnectionMock,

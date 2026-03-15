@@ -4,3 +4,4 @@ certs/*.key
 certs/*.crt
 *.tsbuildinfo
 config/server-config.yaml
+data/

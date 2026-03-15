@@ -6,12 +6,23 @@ import { loadCertManager } from "./proxy/cert-manager.js";
 import { SecretCache } from "./secrets/cache.js";
 import { EnvProvider } from "./secrets/env-provider.js";
 import { AwsProvider } from "./secrets/aws-provider.js";
+import { StoredProvider } from "./secrets/stored-provider.js";
 import { SecretResolver } from "./secrets/resolver.js";
 import { AuditLogger } from "./audit/audit-logger.js";
 import { ProxyServer } from "./proxy/server.js";
 import { Authenticator } from "./auth/authenticator.js";
+import { ConfigAuthBackend } from "./auth/config-backend.js";
+import { DbAuthBackend } from "./auth/db-backend.js";
+import { CompositeAuthBackend } from "./auth/composite-backend.js";
 import { TunnelServer } from "./tunnel/tunnel-server.js";
+import { initDatabase } from "./panel/db/database.js";
+import { loadOrCreateEncryptionKey } from "./panel/db/crypto.js";
+import { migrateConfigClients } from "./panel/db/migrate-config.js";
+import { listSecrets } from "./panel/db/secrets.js";
+import { startPanelServer } from "./panel/server.js";
 import type { SecretProvider } from "./secrets/types.js";
+import type { SecretConfig } from "./config/schema.js";
+import type Database from "better-sqlite3";
 
 async function main() {
   // Determine config file path: CLI arg > env > default
@@ -20,7 +31,7 @@ async function main() {
     process.env.GUARDIAN_CONFIG ||
     "config/server-config.yaml";
 
-  let config;
+  let config: ReturnType<typeof loadConfig>;
   try {
     config = loadConfig(configPath);
   } catch (err) {
@@ -53,6 +64,17 @@ async function main() {
   const caCert = forge.pki.certificateFromPem(caCertPem);
   const caKey = forge.pki.privateKeyFromPem(caKeyPem);
 
+  // Initialize panel database if panel is enabled
+  let db: Database.Database | undefined;
+  let encryptionKey: Buffer | undefined;
+  const panelConfig = config.panel;
+
+  if (panelConfig?.enabled) {
+    db = initDatabase(panelConfig.dbPath);
+    encryptionKey = loadOrCreateEncryptionKey(panelConfig.encryptionKeyFile);
+    migrateConfigClients(db, config.auth);
+  }
+
   // Set up secret providers
   const providers = new Map<string, SecretProvider>();
   providers.set("env", new EnvProvider());
@@ -62,14 +84,47 @@ async function main() {
     logger.info({ region: config.aws.region }, "AWS Secrets Manager provider enabled");
   }
 
+  if (db && encryptionKey) {
+    providers.set("stored", new StoredProvider(db, encryptionKey));
+    logger.info("Stored secret provider enabled (panel DB)");
+  }
+
   // Set up cache and resolver
   const cache = new SecretCache(
     config.cache.enabled ? config.cache.defaultTtlSeconds * 1000 : 0,
   );
   const resolver = new SecretResolver(providers, cache, logger);
 
-  // Set up audit logger
-  const auditLogger = new AuditLogger(config.logging.audit);
+  // Set up authenticator with appropriate backend
+  const configBackend = new ConfigAuthBackend(config.auth);
+  let authenticator: Authenticator;
+
+  if (db) {
+    const dbBackend = new DbAuthBackend(db);
+    const compositeBackend = new CompositeAuthBackend(dbBackend, configBackend);
+    authenticator = new Authenticator({ enabled: config.auth.enabled }, compositeBackend);
+  } else {
+    authenticator = new Authenticator({ enabled: config.auth.enabled }, configBackend);
+  }
+
+  // Set up audit logger (dual-write to JSONL + SQLite when panel is enabled)
+  const auditLogger = new AuditLogger(config.logging.audit, db);
+
+  // Build merged secrets config (YAML + DB)
+  function buildSecretsConfig(): Record<string, SecretConfig> {
+    const merged = { ...config.secrets };
+    if (db) {
+      for (const secret of listSecrets(db)) {
+        merged[secret.name] = {
+          provider: secret.provider,
+          path: secret.provider === "stored" ? secret.name : secret.path,
+          field: secret.field || undefined,
+          allowedDomains: secret.allowedDomains,
+        };
+      }
+    }
+    return merged;
+  }
 
   // Create and start proxy
   const proxy = new ProxyServer({
@@ -77,17 +132,20 @@ async function main() {
     certManager,
     resolver,
     auditLogger,
+    authenticator,
     logger,
     caCert,
     caKey,
   });
+
+  // Apply initial merged secrets config
+  proxy.updateSecretsConfig(buildSecretsConfig());
 
   await proxy.start();
 
   // Start tunnel server if configured
   let tunnelServer: TunnelServer | null = null;
   if (config.tunnel?.enabled) {
-    const authenticator = new Authenticator(config.auth);
     tunnelServer = new TunnelServer({
       tunnelConfig: config.tunnel,
       authenticator,
@@ -97,14 +155,41 @@ async function main() {
     await tunnelServer.start();
   }
 
-  // Graceful shutdown
+  // Start admin panel if configured
+  let panelStop: (() => Promise<void>) | null = null;
+  if (panelConfig?.enabled && db && encryptionKey) {
+    const panel = await startPanelServer({
+      config: panelConfig,
+      db,
+      encryptionKey,
+      logger,
+      proxyPort: config.proxy.port,
+      tunnelPort: config.tunnel?.port,
+      reloadSecrets: () => {
+        proxy.updateSecretsConfig(buildSecretsConfig());
+        logger.info("Secrets config reloaded from database");
+      },
+    });
+    panelStop = panel.stop;
+  }
+
+  // Graceful shutdown (guard against repeated signals)
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.info({ signal }, "Shutting down...");
     try {
+      if (panelStop) {
+        await panelStop();
+      }
       if (tunnelServer) {
         await tunnelServer.stop();
       }
       await proxy.stop();
+      if (db) {
+        db.close();
+      }
       logger.info("Proxy server stopped gracefully");
     } catch (err) {
       logger.error({ err }, "Error during shutdown");

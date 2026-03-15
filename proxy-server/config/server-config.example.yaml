@@ -44,3 +44,14 @@ logging:
   audit:
     enabled: true
     file: "logs/audit.jsonl"
+
+# Admin panel — opt-in web UI for managing clients, secrets, and audit logs.
+# Disabled by default. Uncomment the section below to enable.
+# panel:
+#   enabled: true
+#   port: 9090
+#   host: "127.0.0.1"               # use "0.0.0.0" to expose on network (shows warning)
+#   dbPath: "data/guardian.db"       # SQLite database path
+#   defaultAdminPassword: "change-me-immediately"  # forced change on first login
+#   sessionTtlHours: 24
+#   encryptionKeyFile: "data/encryption.key"  # auto-generated if missing

@@ -12,6 +12,7 @@ import { SecretCache } from "../../src/secrets/cache.js";
 import { EnvProvider } from "../../src/secrets/env-provider.js";
 import { AuditLogger } from "../../src/audit/audit-logger.js";
 import { Authenticator } from "../../src/auth/authenticator.js";
+import { ConfigAuthBackend } from "../../src/auth/config-backend.js";
 import { encodeFrame, FrameType, FrameDecoder } from "../../src/tunnel/protocol.js";
 import type { ServerConfig } from "../../src/config/schema.js";
 import type { Logger } from "../../src/utils/logger.js";
@@ -136,17 +137,18 @@ describe("Tunnel E2E", () => {
       logging: { level: "silent", audit: { enabled: false } },
     };
 
+    const authenticator = new Authenticator({ enabled: config.auth.enabled }, new ConfigAuthBackend(config.auth));
+
     proxyServer = new ProxyServer({
       config,
       certManager,
       resolver,
       auditLogger,
+      authenticator,
       logger,
       targetTlsOptions: { rejectUnauthorized: false },
     });
     await proxyServer.start();
-
-    const authenticator = new Authenticator(config.auth);
 
     tunnelServer = new TunnelServer({
       tunnelConfig: {

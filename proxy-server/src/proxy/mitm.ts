@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import type { Socket } from "node:net";
 import type { CertManager } from "./cert-manager.js";
 import type { SecretResolver } from "../secrets/resolver.js";
-import type { ServerConfig } from "../config/schema.js";
+import type { SecretConfig } from "../config/schema.js";
 import type { AuditLogger, AuditEntry } from "../audit/audit-logger.js";
 import type { Logger } from "../utils/logger.js";
 import { injectSecrets } from "../injection/injector.js";
@@ -18,7 +18,7 @@ import type { SocketReader, BodyInfo } from "./http-parser.js";
 export interface MitmDeps {
   certManager: CertManager;
   resolver: SecretResolver;
-  config: ServerConfig;
+  secretsConfig: Record<string, SecretConfig>;
   auditLogger: AuditLogger;
   logger: Logger;
   /** Extra TLS options for outbound connections (e.g. rejectUnauthorized for testing) */
@@ -34,7 +34,7 @@ export async function handleMitm(
   machineId: string,
   deps: MitmDeps,
 ): Promise<void> {
-  const { certManager, resolver, config, auditLogger, logger } = deps;
+  const { certManager, resolver, secretsConfig, auditLogger, logger } = deps;
 
   // Generate certificate for this hostname
   const { cert, key, ocspResponse } = certManager.getCertificate(targetHost);
@@ -85,7 +85,7 @@ export async function handleMitm(
       const { injectedHeaders, injections } = await injectSecrets(
         targetHost,
         parsed.headers,
-        config.secrets,
+        secretsConfig,
         resolver,
         logger,
       );

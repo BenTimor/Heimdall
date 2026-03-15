@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Authenticator } from "../src/auth/authenticator.js";
+import { ConfigAuthBackend } from "../src/auth/config-backend.js";
 import type { AuthConfig } from "../src/config/schema.js";
 
 const config: AuthConfig = {
@@ -10,13 +11,15 @@ const config: AuthConfig = {
   ],
 };
 
+const backend = new ConfigAuthBackend(config);
+
 function makeBasicHeader(machineId: string, token: string): string {
   return `Basic ${Buffer.from(`${machineId}:${token}`).toString("base64")}`;
 }
 
 describe("Authenticator", () => {
   it("authenticates valid credentials", () => {
-    const auth = new Authenticator(config);
+    const auth = new Authenticator({ enabled: true }, backend);
     const result = auth.authenticate(
       makeBasicHeader("dev-laptop-1", "secret-token-123")
     );
@@ -25,7 +28,7 @@ describe("Authenticator", () => {
   });
 
   it("rejects wrong token", () => {
-    const auth = new Authenticator(config);
+    const auth = new Authenticator({ enabled: true }, backend);
     const result = auth.authenticate(
       makeBasicHeader("dev-laptop-1", "wrong-token")
     );
@@ -34,14 +37,14 @@ describe("Authenticator", () => {
   });
 
   it("rejects missing header", () => {
-    const auth = new Authenticator(config);
+    const auth = new Authenticator({ enabled: true }, backend);
     const result = auth.authenticate(undefined);
     expect(result.authenticated).toBe(false);
     expect(result.error).toContain("Missing");
   });
 
   it("rejects malformed base64", () => {
-    const auth = new Authenticator(config);
+    const auth = new Authenticator({ enabled: true }, backend);
     // Valid base64 but no colon in decoded string
     const result = auth.authenticate(
       `Basic ${Buffer.from("no-colon-here").toString("base64")}`
@@ -51,21 +54,22 @@ describe("Authenticator", () => {
   });
 
   it("rejects non-Basic auth scheme", () => {
-    const auth = new Authenticator(config);
+    const auth = new Authenticator({ enabled: true }, backend);
     const result = auth.authenticate("Bearer some-token");
     expect(result.authenticated).toBe(false);
     expect(result.error).toContain("Malformed");
   });
 
   it("allows anonymous when auth is disabled", () => {
-    const disabledAuth = new Authenticator({ enabled: false, clients: [] });
+    const disabledBackend = new ConfigAuthBackend({ enabled: false, clients: [] });
+    const disabledAuth = new Authenticator({ enabled: false }, disabledBackend);
     const result = disabledAuth.authenticate(undefined);
     expect(result.authenticated).toBe(true);
     expect(result.machineId).toBe("anonymous");
   });
 
   it("rejects unknown machine ID", () => {
-    const auth = new Authenticator(config);
+    const auth = new Authenticator({ enabled: true }, backend);
     const result = auth.authenticate(
       makeBasicHeader("unknown-machine", "secret-token-123")
     );

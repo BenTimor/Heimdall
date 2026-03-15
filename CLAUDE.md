@@ -11,7 +11,7 @@ Transparent secret injection for HTTPS traffic. Two components: a Node.js proxy 
 # Proxy server (Node.js)
 cd proxy-server
 pnpm install && pnpm run generate-ca
-pnpm test                # 142 tests
+pnpm test                # 157 tests
 pnpm run dev             # start dev server
 
 # Local agent (Rust)
@@ -36,12 +36,13 @@ Guardian/
       proxy/              # CONNECT proxy, MITM, passthrough
       tunnel/             # Binary protocol, session manager, tunnel server
       injection/          # Placeholder scanning + secret injection
-      secrets/            # Providers (env, AWS Secrets Manager)
-      auth/               # Basic proxy auth (timing-safe)
-      audit/              # JSONL audit log
+      secrets/            # Providers (env, AWS, stored)
+      auth/               # AuthBackend interface, authenticator, config/db/composite backends
+      audit/              # Dual-sink audit log (JSONL + SQLite)
+      panel/              # Admin panel (Fastify, SQLite, vanilla SPA)
       config/             # Zod schemas + YAML loader
       utils/              # Logger, domain matcher
-    tests/                # 18 test files (142 tests)
+    tests/                # 19 test files (157 tests)
 
   local-agent/            # Rust — developer machine daemon
     src/

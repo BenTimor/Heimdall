@@ -161,7 +161,7 @@ Quick smoke test:
 pnpm test
 ```
 
-All 142 tests run locally with no external dependencies.
+All 157 tests run locally with no external dependencies.
 
 ## Configuration Reference
 
@@ -183,7 +183,7 @@ Map of placeholder name to secret config:
 ```yaml
 secrets:
   PLACEHOLDER_NAME:
-    provider: "env"          # "env" or "aws"
+    provider: "env"          # "env", "aws", or "stored" (panel-managed)
     path: "ENV_VAR_NAME"     # env var name or AWS secret ARN/name
     field: "json_field"      # optional: extract a field from JSON secret
     allowedDomains:          # domains where this secret can be injected
@@ -227,6 +227,87 @@ Only initialized if any secret uses `provider: "aws"`.
 | `level` | `info` | Log level (trace/debug/info/warn/error/fatal/silent) |
 | `audit.enabled` | `true` | Enable JSONL audit logging |
 | `audit.file` | — | Audit log file path (e.g., `logs/audit.jsonl`) |
+
+### `panel` (optional)
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable the admin panel |
+| `port` | `9090` | Panel listen port |
+| `host` | `127.0.0.1` | Panel bind address (`0.0.0.0` for network access — shows warning) |
+| `dbPath` | `data/guardian.db` | SQLite database file path |
+| `defaultAdminPassword` | `change-me-immediately` | Initial admin password (must change on first login) |
+| `sessionTtlHours` | `24` | Login session duration in hours |
+| `encryptionKeyFile` | `data/encryption.key` | AES-256 key file for stored secrets (auto-generated if missing) |
+
+## Admin Panel
+
+The admin panel is an opt-in web UI for managing clients, secrets, and viewing audit logs at runtime — without editing YAML files.
+
+### Enabling the panel
+
+Add the `panel` section to your config:
+
+```yaml
+panel:
+  enabled: true
+  port: 9090
+  host: "127.0.0.1"
+  dbPath: "data/guardian.db"
+  defaultAdminPassword: "change-me-immediately"
+  sessionTtlHours: 24
+  encryptionKeyFile: "data/encryption.key"
+```
+
+Then start the server normally:
+
+```bash
+pnpm run dev
+```
+
+You should see:
+
+```
+INFO: Proxy server started { port: 8080, host: "0.0.0.0" }
+INFO: Admin panel started { port: 9090, host: "127.0.0.1" }
+```
+
+Open `http://localhost:9090/panel/` in your browser. Log in with username `admin` and the `defaultAdminPassword`. You will be forced to change the password on first login.
+
+### What you can do in the panel
+
+- **Clients**: Create, enable/disable, and delete clients. Tokens are generated automatically and shown once on creation — copy them immediately.
+- **Secrets**: Configure secrets with three provider types:
+  - `env` — reads from environment variables (same as YAML config)
+  - `aws` — reads from AWS Secrets Manager
+  - `stored` — encrypted directly in the database (AES-256-GCM)
+- **Audit log**: Browse paginated request logs with filters by client and action. Dashboard shows aggregate stats (total requests, injections, unique clients, last 24h activity).
+- **Settings**: Change admin password, view system info (version, uptime, ports).
+
+### Backward compatibility
+
+Enabling the panel does not break existing YAML-based configuration:
+
+- YAML `auth.clients` are automatically migrated to the database on startup (tokens are hashed)
+- The `CompositeAuthBackend` checks the database first, then falls back to YAML config
+- YAML `secrets` continue to work alongside panel-managed secrets
+- JSONL audit logging continues to work — the panel adds SQLite as a second audit sink
+
+### Network access
+
+By default the panel binds to `127.0.0.1` (localhost only). To access it from another machine, set `host: "0.0.0.0"` — the panel will show a warning banner reminding you that it is network-exposed. For production, use an SSH tunnel instead:
+
+```bash
+ssh -L 9090:localhost:9090 your-server
+```
+
+### Security
+
+- Admin passwords are hashed with bcrypt (cost factor 12)
+- Client tokens are 32 random bytes (hex), stored as SHA-256 hashes, compared with `timingSafeEqual`
+- Stored secrets are encrypted with AES-256-GCM; the key lives in a separate file (not in the YAML config)
+- Login is rate-limited to 5 attempts per IP per minute
+- Session cookies are `HttpOnly` + `SameSite=Strict`
+- All mutating API calls require `Content-Type: application/json` (CSRF protection)
 
 ## Docker
 

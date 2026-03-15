@@ -10,6 +10,8 @@ import { SecretResolver } from "../../src/secrets/resolver.js";
 import { SecretCache } from "../../src/secrets/cache.js";
 import { EnvProvider } from "../../src/secrets/env-provider.js";
 import { AuditLogger } from "../../src/audit/audit-logger.js";
+import { Authenticator } from "../../src/auth/authenticator.js";
+import { ConfigAuthBackend } from "../../src/auth/config-backend.js";
 import type { ServerConfig } from "../../src/config/schema.js";
 import type { Logger } from "../../src/utils/logger.js";
 
@@ -200,11 +202,14 @@ describe("Proxy Hardening", () => {
       logging: { level: "silent", audit: { enabled: false } },
     };
 
+    const authenticator = new Authenticator({ enabled: config.auth.enabled }, new ConfigAuthBackend(config.auth));
+
     proxy = new ProxyServer({
       config,
       certManager: new CertManager(ca.caCertPem, ca.caKeyPem),
       resolver: new SecretResolver(new Map([["env", new EnvProvider()]]), new SecretCache(300_000)),
       auditLogger: new AuditLogger({ enabled: false }),
+      authenticator,
       logger: createMockLogger(),
       targetTlsOptions: { rejectUnauthorized: false },
     });

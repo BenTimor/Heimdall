@@ -10,7 +10,7 @@ Secret-injecting HTTPS CONNECT proxy. Clients set `HTTPS_PROXY=http://machineId:
 pnpm install          # install deps
 pnpm run build        # tsup → dist/
 pnpm run dev          # tsx src/index.ts (hot reload)
-pnpm test             # vitest run (all 142 tests)
+pnpm test             # vitest run (all 157 tests)
 pnpm test:watch       # vitest in watch mode
 pnpm run lint         # tsc --noEmit
 pnpm run generate-ca  # create certs/ca.crt + ca.key
@@ -64,10 +64,35 @@ src/
     resolver.ts             # Cache-through resolver (provider → cache)
     env-provider.ts         # process.env provider
     aws-provider.ts         # AWS Secrets Manager provider
+    stored-provider.ts      # Decrypts stored secrets from SQLite
   auth/
-    authenticator.ts        # Basic proxy auth with crypto.timingSafeEqual
+    auth-backend.ts         # AuthBackend interface + ClientLookup type
+    authenticator.ts        # Authenticator class (accepts AuthBackend)
+    config-backend.ts       # ConfigAuthBackend — wraps YAML config clients
+    db-backend.ts           # DbAuthBackend — reads from SQLite clients table
+    composite-backend.ts    # CompositeAuthBackend — DB-first, config fallback
   audit/
-    audit-logger.ts         # JSONL audit log (never logs secret values)
+    audit-logger.ts         # Dual-sink audit log: JSONL + SQLite (optional)
+  panel/
+    server.ts               # Fastify admin panel server (port 9090)
+    auth.ts                 # Session management, bcrypt password helpers
+    routes/
+      auth.ts               # Login, logout, change-password (rate limited)
+      clients.ts            # Client CRUD + token regeneration
+      secrets.ts            # Secret CRUD (never returns values)
+      audit.ts              # Paginated audit log + stats
+      system.ts             # System info endpoint
+    db/
+      database.ts           # SQLite init + migration runner (WAL mode)
+      crypto.ts             # AES-256-GCM encrypt/decrypt helpers
+      clients.ts            # Client query functions
+      secrets.ts            # Secret query functions
+      audit.ts              # Audit query functions
+      migrate-config.ts     # Migrate YAML clients → DB on startup
+    public/
+      index.html            # SPA shell
+      app.js                # Vanilla JS SPA (hash-based routing)
+      style.css             # Pico-inspired CSS
   utils/
     logger.ts               # Pino logger factory
     domain-matcher.ts       # Exact, wildcard (*.foo.com), IP glob, CIDR matching
@@ -92,6 +117,8 @@ tests/
 All config is validated through `ServerConfigSchema` in `src/config/schema.ts`. YAML config file path: CLI arg → `GUARDIAN_CONFIG` env → `config/server-config.yaml`.
 
 Optional `tunnel` config enables the tunnel server (`TunnelConfigSchema`): port, host, TLS cert/key, heartbeat intervals.
+
+Optional `panel` config enables the admin panel (`PanelConfigSchema`): port, host, dbPath, defaultAdminPassword, sessionTtlHours, encryptionKeyFile.
 
 ### Tunnel Protocol (Binary Framing)
 Frame format: `[ConnID: 4B BE][Type: 1B][PayloadLen: 4B BE][Payload]`. Header = 9 bytes. Max payload = 65536 bytes. ConnID 0 = control channel.
@@ -123,6 +150,19 @@ Custom `SocketReader` class with internal buffer and async read helpers (`readUn
 
 ### MITM (`mitm.ts`)
 Forces `Connection: close` on forwarded requests so the target closes the connection after responding. This simplifies response reading (wait for `end` event). The `forwardToTarget` function buffers the full response before writing to the client TLS socket.
+
+### Admin Panel (`panel/`)
+- Fastify server on separate port (default 9090), opt-in via `panel.enabled: true`
+- SQLite (better-sqlite3) stores admins, clients, secrets, sessions, audit logs
+- `AuthBackend` interface decouples auth from config: `ConfigAuthBackend` (YAML), `DbAuthBackend` (SQLite), `CompositeAuthBackend` (DB-first fallback)
+- `ProxyServer` accepts `Authenticator` via deps (no longer creates its own)
+- `ProxyServer.secretsConfig` is mutable — panel calls `reloadSecrets()` on changes, which merges YAML + DB secrets
+- `MitmDeps.secretsConfig` replaces `MitmDeps.config` for secrets lookup
+- Stored secrets: AES-256-GCM encrypted in SQLite, key in separate file (`panel.encryptionKeyFile`)
+- `AuditLogger` dual-writes to JSONL + SQLite when DB is provided
+- Vanilla SPA frontend (no build step): hash-based routing, Pico-inspired CSS
+- Session cookies: HttpOnly + SameSite=Strict, hourly expired session cleanup
+- YAML clients are auto-migrated to DB on startup (`migrateConfigClients`)
 
 ### Testing
 - **Unit tests**: Mock dependencies, test each module in isolation

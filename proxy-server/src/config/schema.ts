@@ -74,6 +74,18 @@ export const TunnelConfigSchema = z.object({
 
 export type TunnelConfig = z.infer<typeof TunnelConfigSchema>;
 
+export const PanelConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  port: z.number().int().min(1).max(65535).default(9090),
+  host: z.string().default("127.0.0.1"),
+  dbPath: z.string().default("data/guardian.db"),
+  defaultAdminPassword: z.string().default("change-me-immediately"),
+  sessionTtlHours: z.number().int().min(1).default(24),
+  encryptionKeyFile: z.string().default("data/encryption.key"),
+});
+
+export type PanelConfig = z.infer<typeof PanelConfigSchema>;
+
 export const ServerConfigSchema = z.object({
   proxy: ProxyConfigSchema.default({}),
   ca: CaConfigSchema.default({}),
@@ -84,6 +96,7 @@ export const ServerConfigSchema = z.object({
   aws: AwsConfigSchema.default({}),
   logging: LoggingConfigSchema.default({}),
   tunnel: TunnelConfigSchema.optional(),
+  panel: PanelConfigSchema.optional(),
 });
 
 export type ServerConfig = z.infer<typeof ServerConfigSchema>;
