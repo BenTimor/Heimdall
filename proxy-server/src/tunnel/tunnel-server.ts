@@ -44,6 +44,19 @@ export class TunnelServer {
       logger.error({ err }, "Tunnel server error");
     });
 
+    // Catch errors on raw TCP sockets before/after TLS wrapping.
+    // Without this, ECONNRESET on the underlying socket crashes the process.
+    this.server.on("connection", (rawSocket: import("node:net").Socket) => {
+      rawSocket.on("error", (err) => {
+        logger.debug({ err }, "Raw tunnel socket error");
+      });
+    });
+
+    // Catch TLS handshake failures (e.g. non-TLS traffic hitting the port)
+    this.server.on("tlsClientError", (err) => {
+      logger.debug({ err }, "TLS client error");
+    });
+
     // Start heartbeat checker
     this.heartbeatTimer = setInterval(() => {
       this.checkHeartbeats();

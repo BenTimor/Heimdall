@@ -52,6 +52,13 @@ export class ProxyServer {
     this.server.on("error", (err) => {
       deps.logger.error({ err }, "Proxy server error");
     });
+
+    this.server.on("clientError", (err, socket) => {
+      deps.logger.debug({ err }, "Client socket error");
+      if (!socket.destroyed) {
+        socket.destroy();
+      }
+    });
   }
 
   /**
