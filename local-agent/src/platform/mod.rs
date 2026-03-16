@@ -28,6 +28,7 @@ pub trait PlatformOps {
     fn uninstall_ca_cert(&self) -> Result<()>;
 
     /// Check if the CA certificate is installed.
+    #[allow(dead_code)]
     fn is_ca_installed(&self, cert_pem_path: &Path) -> Result<bool>;
 
     /// Register the agent as a system service.

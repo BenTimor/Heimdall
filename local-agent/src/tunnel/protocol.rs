@@ -9,6 +9,7 @@ pub const MAX_PAYLOAD_SIZE: usize = 65536;
 const HEADER_SIZE: usize = 9;
 
 /// Connection ID reserved for the control channel.
+#[allow(dead_code)]
 pub const CONTROL_CONNECTION_ID: u32 = 0;
 
 #[derive(Debug, Error)]

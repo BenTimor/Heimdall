@@ -183,13 +183,6 @@ impl Multiplexer {
         Ok(conn_id)
     }
 
-    pub fn status(&self) -> MultiplexerStatus {
-        MultiplexerStatus {
-            active_connections: self.connections.len(),
-            last_heartbeat: *self.last_heartbeat.blocking_lock(),
-        }
-    }
-
     pub async fn status_async(&self) -> MultiplexerStatus {
         MultiplexerStatus {
             active_connections: self.connections.len(),
