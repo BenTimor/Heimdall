@@ -1,9 +1,5 @@
 # Security Hardening Backlog
 
-Tracked security improvements for Phase 7. Items are roughly prioritized.
-
-## Backlog (Future)
-
 - [ ] **Rate limiting** — Add per-IP / per-machineId token bucket rate limiter to: CONNECT requests on proxy server, transparent listener (agent), OCSP responder (proxy), health endpoint (agent). Start with CONNECT and transparent listener.
 - [ ] **Audit logger resilience** — Current `audit-logger.ts` silently ignores `writeSync()` failures (disk full, permission denied). Should catch errors and log to stderr. Don't fail requests — add proper structured logging mechanism first, then make audit logging reliable on top of it.
 - [ ] **Certificate expiry monitoring** — MITM CA certs have 1-year validity. No warning when approaching expiry — it fails silently. Need a notification mechanism beyond logs (since no one regularly watches them). Consider: health endpoint warning field, CLI `status` command warning, or push notification to a monitoring channel.
