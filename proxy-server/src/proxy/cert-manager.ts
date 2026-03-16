@@ -7,14 +7,16 @@ export class CertManager {
   private caCert: forge.pki.Certificate;
   private caKey: forge.pki.rsa.PrivateKey;
   private cache: Map<string, { cert: string; key: string; ocspResponse: Buffer }>;
+  private maxCacheSize: number;
 
   private caKeyId: string;
   private ocspUrl: string | undefined;
 
-  constructor(caCertPem: string, caKeyPem: string, ocspUrl?: string) {
+  constructor(caCertPem: string, caKeyPem: string, ocspUrl?: string, maxCacheSize: number = 10_000) {
     this.caCert = forge.pki.certificateFromPem(caCertPem);
     this.caKey = forge.pki.privateKeyFromPem(caKeyPem);
     this.cache = new Map();
+    this.maxCacheSize = maxCacheSize;
     this.ocspUrl = ocspUrl;
 
     // Pre-compute the CA's subject key identifier (raw binary) for use in
@@ -32,6 +34,9 @@ export class CertManager {
   getCertificate(hostname: string): { cert: string; key: string; ocspResponse: Buffer } {
     const cached = this.cache.get(hostname);
     if (cached) {
+      // Move to end of Map iteration order (most recently used)
+      this.cache.delete(hostname);
+      this.cache.set(hostname, cached);
       return cached;
     }
 
@@ -129,6 +134,18 @@ export class CertManager {
       ocspResponse,
     };
 
+    // LRU eviction: remove oldest entries if cache is at capacity
+    if (this.cache.size >= this.maxCacheSize) {
+      const keysToDelete = this.cache.size - this.maxCacheSize + 1;
+      const iter = this.cache.keys();
+      for (let i = 0; i < keysToDelete; i++) {
+        const oldest = iter.next().value;
+        if (oldest !== undefined) {
+          this.cache.delete(oldest);
+        }
+      }
+    }
+
     this.cache.set(hostname, result);
     return result;
   }
@@ -146,8 +163,9 @@ export function loadCertManager(
   certFile: string,
   keyFile: string,
   ocspUrl?: string,
+  maxCacheSize?: number,
 ): CertManager {
   const caCertPem = fs.readFileSync(certFile, "utf-8");
   const caKeyPem = fs.readFileSync(keyFile, "utf-8");
-  return new CertManager(caCertPem, caKeyPem, ocspUrl);
+  return new CertManager(caCertPem, caKeyPem, ocspUrl, maxCacheSize);
 }

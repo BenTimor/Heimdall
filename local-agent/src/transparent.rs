@@ -1,12 +1,21 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use dashmap::DashMap;
 use tokio::net::TcpListener;
-use tracing::{debug, error, info};
+use tokio::sync::Semaphore;
+use tracing::{debug, error, info, warn};
 
 use crate::config::TransparentConfig;
 use crate::sni;
 use crate::tunnel::multiplexer::Multiplexer;
+
+/// Maximum number of concurrent transparent connections.
+const MAX_CONCURRENT_CONNECTIONS: usize = 1024;
+
+/// Maximum number of concurrent connections from a single IP.
+const MAX_CONNECTIONS_PER_IP: usize = 100;
 
 /// Run the transparent TCP listener.
 ///
@@ -25,17 +34,45 @@ pub async fn run_transparent_listener(
         .context(format!("binding transparent listener on {}", addr))?;
     info!(addr = %addr, "transparent listener started");
 
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+    let per_ip_counts: Arc<DashMap<IpAddr, usize>> = Arc::new(DashMap::new());
+
     loop {
         tokio::select! {
             result = listener.accept() => {
                 match result {
                     Ok((stream, peer)) => {
                         debug!(peer = %peer, "accepted transparent connection");
+                        let ip = peer.ip();
+                        {
+                            let mut count = per_ip_counts.entry(ip).or_insert(0);
+                            if *count >= MAX_CONNECTIONS_PER_IP {
+                                warn!(ip = %ip, "per-IP connection limit reached ({})", MAX_CONNECTIONS_PER_IP);
+                                continue;
+                            }
+                            *count += 1;
+                        }
                         let mux = multiplexer.clone();
+                        let per_ip = per_ip_counts.clone();
+                        let sem = semaphore.clone();
+                        let permit = match sem.acquire_owned().await {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                error!("connection semaphore closed unexpectedly");
+                                break;
+                            }
+                        };
+                        if semaphore.available_permits() == 0 {
+                            warn!("transparent listener at max concurrent connections ({})", MAX_CONCURRENT_CONNECTIONS);
+                        }
                         tokio::spawn(async move {
                             if let Err(e) = handle_transparent(stream, mux).await {
                                 debug!(peer = %peer, error = %e, "transparent connection failed");
                             }
+                            if let Some(mut count) = per_ip.get_mut(&ip) {
+                                *count = count.saturating_sub(1);
+                            }
+                            drop(permit);
                         });
                     }
                     Err(e) => {
@@ -74,6 +111,10 @@ async fn handle_transparent(
     let hostname = sni::extract_sni(&buf[..n])
         .map_err(|e| anyhow::anyhow!("SNI extraction failed: {}", e))?;
 
+    if !is_valid_hostname(&hostname) {
+        anyhow::bail!("invalid SNI hostname: {}", hostname);
+    }
+
     debug!(hostname = %hostname, "extracted SNI from transparent connection");
 
     let conn_id = mux
@@ -83,4 +124,31 @@ async fn handle_transparent(
 
     debug!(conn_id, hostname = %hostname, "transparent tunnel established");
     Ok(())
+}
+
+/// Validate that a hostname conforms to DNS rules.
+///
+/// Checks: total length <= 253 characters, each label <= 63 characters,
+/// labels contain only `[a-zA-Z0-9-]`, labels don't start or end with `-`.
+fn is_valid_hostname(hostname: &str) -> bool {
+    if hostname.is_empty() || hostname.len() > 253 {
+        return false;
+    }
+
+    for label in hostname.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return false;
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return false;
+        }
+        if !label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return false;
+        }
+    }
+
+    true
 }

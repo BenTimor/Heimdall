@@ -46,8 +46,38 @@ export async function startPanelServer(deps: PanelServerDeps): Promise<{ stop: (
     decorateReply: false,
   });
 
-  // Rate limiter state for login (in-memory)
+  // Rate limiter state for login (in-memory, strict: 5 req/min)
   const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+
+  // Rate limiter state for general API routes (in-memory, 100 req/min)
+  const apiRateLimit = new Map<string, { count: number; resetAt: number }>();
+  const API_RATE_LIMIT = 100;
+  const API_RATE_WINDOW_MS = 60_000;
+
+  // General API rate limiting hook (applies to all /panel/api/ routes)
+  app.addHook("onRequest", async (request, reply) => {
+    if (!request.url.startsWith("/panel/api/")) return;
+    // Login has its own stricter limiter
+    if (request.url === "/panel/api/auth/login") return;
+
+    const ip = request.ip;
+    const now = Date.now();
+    const entry = apiRateLimit.get(ip);
+
+    if (entry) {
+      if (now < entry.resetAt) {
+        if (entry.count >= API_RATE_LIMIT) {
+          reply.code(429).send({ error: "Too many requests, try again later" });
+          return;
+        }
+        entry.count++;
+      } else {
+        apiRateLimit.set(ip, { count: 1, resetAt: now + API_RATE_WINDOW_MS });
+      }
+    } else {
+      apiRateLimit.set(ip, { count: 1, resetAt: now + API_RATE_WINDOW_MS });
+    }
+  });
 
   // Auth middleware for API routes
   app.addHook("onRequest", async (request, reply) => {
@@ -105,7 +135,7 @@ export async function startPanelServer(deps: PanelServerDeps): Promise<{ stop: (
     reply.code(404).send({ error: "Not found" });
   });
 
-  // Periodic session cleanup
+  // Periodic session cleanup + rate limit map cleanup
   const cleanupInterval = setInterval(() => {
     try {
       const cleaned = cleanExpiredSessions(db);
@@ -114,6 +144,15 @@ export async function startPanelServer(deps: PanelServerDeps): Promise<{ stop: (
       }
     } catch {
       // ignore cleanup errors
+    }
+
+    // Evict expired rate limit entries to prevent unbounded Map growth
+    const now = Date.now();
+    for (const [ip, entry] of apiRateLimit) {
+      if (now >= entry.resetAt) apiRateLimit.delete(ip);
+    }
+    for (const [ip, entry] of loginAttempts) {
+      if (now >= entry.resetAt) loginAttempts.delete(ip);
     }
   }, 60 * 60 * 1000);
 

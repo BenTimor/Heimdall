@@ -95,7 +95,7 @@ impl WinDivertInterceptor {
         tunnel_server_ip: Option<Ipv4Addr>,
         excluded_pids: Vec<u32>,
     ) -> Result<Self> {
-        eprintln!("[windivert] start() entry");
+        info!("WinDivert interceptor starting");
 
         // With static linking, the WinDivert C code's DllEntry is never called
         // automatically. We must call it to initialize the C-side TLS index
@@ -121,11 +121,11 @@ impl WinDivertInterceptor {
         // initialization consumes extreme stack space that overflows even a
         // 64 MB thread stack. Virtual memory reservation is cheap on 64-bit
         // Windows — only physically touched pages are committed.
-        eprintln!("[windivert] opening SOCKET layer handle (on dedicated thread)");
+        debug!("opening SOCKET layer handle");
         let socket_wd = on_large_stack(|| {
             WinDivert::socket("outbound and remotePort == 443", -1, WinDivertFlags::new().set_sniff())
         })?.map_err(|e| anyhow::anyhow!("opening WinDivert socket handle: {e}"))?;
-        eprintln!("[windivert] SOCKET handle opened");
+        debug!("SOCKET handle opened");
         let socket_handle_raw = unsafe { get_raw_handle(&socket_wd) };
 
         let pid_map_socket = Arc::clone(&socket_pid_map);
@@ -166,15 +166,15 @@ impl WinDivertInterceptor {
         );
 
         // Open WinDivert network handles on dedicated sub-threads
-        eprintln!("[windivert] opening NETWORK outbound handle (on dedicated thread)");
+        debug!("opening NETWORK outbound handle");
         let outbound_wd = on_large_stack(move || {
             WinDivert::network(&outbound_filter, 0, WinDivertFlags::new())
         })?.map_err(|e| anyhow::anyhow!("opening WinDivert outbound handle: {e}"))?;
-        eprintln!("[windivert] opening NETWORK inbound handle (on dedicated thread)");
+        debug!("opening NETWORK inbound handle");
         let inbound_wd = on_large_stack(move || {
             WinDivert::network(&inbound_filter, 0, WinDivertFlags::new())
         })?.map_err(|e| anyhow::anyhow!("opening WinDivert inbound handle: {e}"))?;
-        eprintln!("[windivert] all handles opened");
+        debug!("all WinDivert handles opened");
 
         // Save raw HANDLE values for cross-thread shutdown.
         // Safety: WinDivert<L>'s first field is `handle: HANDLE` (isize).
@@ -216,7 +216,7 @@ impl WinDivertInterceptor {
             })
             .context("spawning WinDivert cleanup thread")?;
 
-        eprintln!("[windivert] all threads spawned, returning interceptor");
+        info!("WinDivert interceptor started, all threads spawned");
         Ok(Self {
             nat_table,
             socket_pid_map,

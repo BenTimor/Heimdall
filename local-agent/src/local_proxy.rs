@@ -1,13 +1,23 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use base64::Engine;
+use dashmap::DashMap;
+use subtle::ConstantTimeEq;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
 use crate::config::LocalProxyConfig;
 use crate::tunnel::multiplexer::Multiplexer;
+
+/// Maximum number of concurrent proxy connections.
+const MAX_CONCURRENT_CONNECTIONS: usize = 1024;
+
+/// Maximum number of concurrent connections from a single IP.
+const MAX_CONNECTIONS_PER_IP: usize = 100;
 
 /// Run the local HTTP CONNECT proxy.
 /// Users point HTTPS_PROXY=http://127.0.0.1:19080 at this.
@@ -23,6 +33,8 @@ pub async fn run_local_proxy(
     info!(addr = %addr, "local CONNECT proxy listening");
 
     let auth_token = config.auth_token.clone();
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+    let per_ip_counts: Arc<DashMap<IpAddr, usize>> = Arc::new(DashMap::new());
 
     loop {
         tokio::select! {
@@ -30,12 +42,37 @@ pub async fn run_local_proxy(
                 match result {
                     Ok((stream, peer)) => {
                         debug!(peer = %peer, "accepted local connection");
+                        let ip = peer.ip();
+                        {
+                            let mut count = per_ip_counts.entry(ip).or_insert(0);
+                            if *count >= MAX_CONNECTIONS_PER_IP {
+                                warn!(ip = %ip, "per-IP connection limit reached ({})", MAX_CONNECTIONS_PER_IP);
+                                continue;
+                            }
+                            *count += 1;
+                        }
                         let mux = multiplexer.clone();
                         let auth = auth_token.clone();
+                        let per_ip = per_ip_counts.clone();
+                        let sem = semaphore.clone();
+                        let permit = match sem.acquire_owned().await {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                error!("connection semaphore closed unexpectedly");
+                                break;
+                            }
+                        };
+                        if semaphore.available_permits() == 0 {
+                            warn!("local proxy at max concurrent connections ({})", MAX_CONCURRENT_CONNECTIONS);
+                        }
                         tokio::spawn(async move {
                             if let Err(e) = handle_connect(stream, mux, auth.as_deref()).await {
                                 warn!(peer = %peer, error = %e, "CONNECT handling failed");
                             }
+                            if let Some(mut count) = per_ip.get_mut(&ip) {
+                                *count = count.saturating_sub(1);
+                            }
+                            drop(permit);
                         });
                     }
                     Err(e) => {
@@ -103,7 +140,7 @@ async fn handle_connect(stream: TcpStream, mux: Arc<Multiplexer>, auth_token: Op
                 match base64::engine::general_purpose::STANDARD.decode(encoded) {
                     Ok(decoded_bytes) => {
                         let decoded = String::from_utf8_lossy(&decoded_bytes);
-                        decoded.as_ref() == expected_token
+                        decoded.as_bytes().ct_eq(expected_token.as_bytes()).into()
                     }
                     Err(_) => false,
                 }

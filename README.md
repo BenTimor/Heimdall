@@ -272,7 +272,7 @@ logging:
 ## Running Tests
 
 ```bash
-# Proxy server (142 tests)
+# Proxy server (157 tests)
 cd proxy-server && pnpm test
 
 # Local agent (36 tests)
@@ -288,10 +288,14 @@ Guardian/
       proxy/              # CONNECT proxy, MITM, passthrough
       tunnel/             # Binary protocol, session manager, tunnel server
       injection/          # Placeholder scanning and secret injection
-      secrets/            # Secret providers (env, AWS)
+      secrets/            # Secret providers (env, AWS, stored)
       auth/               # Client authentication
-      audit/              # JSONL audit logging
-    tests/                # 142 tests (unit + integration)
+      audit/              # Dual-sink audit log (JSONL + SQLite)
+      panel/              # Admin panel (web UI)
+        routes/           # API route handlers
+        db/               # SQLite database layer
+        public/           # Static frontend assets
+    tests/                # 157 tests (unit + integration)
     config/               # Example server config
     certs/                # CA certificate (generated)
 
@@ -321,8 +325,12 @@ Guardian/
 - Authentication required for both proxy access and tunnel connections
 - Domain-bound secrets: `__OPENAI_KEY__` only injects for `api.openai.com` (anti-exfiltration)
 - Timing-safe token comparison prevents timing attacks
-- JSONL audit log records every injection (never logs secret values)
+- Dual-sink audit log (JSONL + SQLite) records every injection (never logs secret values)
 - Transparent mode excludes agent's own traffic from interception (WinDivert: tunnel server IP filter; Linux: iptables `--uid-owner` exclusion)
+
+## Admin Panel
+
+The proxy server includes a web-based admin panel for managing Guardian configuration at runtime. It provides interfaces for managing auth clients, configuring secrets and their domain bindings, and viewing audit logs. Access is secured with session-based authentication and rate-limited login to prevent brute-force attacks.
 
 ## How Transparent Interception Works
 
