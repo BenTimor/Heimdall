@@ -243,6 +243,14 @@ export class TunnelServer {
         session.socket.write(encodeFrame(0, FrameType.HEARTBEAT_ACK));
         break;
 
+      case FrameType.DOMAIN_LIST_REQUEST: {
+        const domains = this.deps.proxyServer.getSecretDomains();
+        const payload = Buffer.from(JSON.stringify(domains));
+        session.socket.write(encodeFrame(0, FrameType.DOMAIN_LIST_RESPONSE, payload));
+        logger.debug({ machineId, domainCount: domains.length }, "Sent domain list to agent");
+        break;
+      }
+
       default:
         logger.debug({ frameType: frame.type, machineId }, "Unexpected frame type");
     }

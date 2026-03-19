@@ -259,6 +259,17 @@ export class ProxyServer {
     this.secretsConfig = newSecrets;
   }
 
+  /** Return deduplicated list of domains that have secrets configured. */
+  getSecretDomains(): string[] {
+    const domains = new Set<string>();
+    for (const secretConfig of Object.values(this.secretsConfig)) {
+      for (const domain of secretConfig.allowedDomains) {
+        domains.add(domain);
+      }
+    }
+    return Array.from(domains);
+  }
+
   private hasSecretsForDomain(hostname: string): boolean {
     for (const secretConfig of Object.values(this.secretsConfig)) {
       if (matchesAnyDomain(hostname, secretConfig.allowedDomains)) {

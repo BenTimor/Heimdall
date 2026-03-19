@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use crate::tunnel::client::FramedTunnel;
+use crate::domain_filter::DomainFilter;
 use crate::tunnel::protocol::{Frame, FrameType};
 
 /// Heartbeat interval and timeout.
@@ -35,6 +36,7 @@ pub struct Multiplexer {
     tunnel_tx: TunnelSender,
     last_heartbeat: Arc<tokio::sync::Mutex<Instant>>,
     max_connections: u32,
+    domain_filter: Arc<DomainFilter>,
 }
 
 /// Status snapshot for health reporting.
@@ -47,7 +49,7 @@ impl Multiplexer {
     /// Create a new multiplexer from a connected+authenticated tunnel.
     /// Spawns the tunnel read loop and heartbeat sender.
     /// Returns the multiplexer handle.
-    pub fn start(framed: FramedTunnel, shutdown: tokio::sync::watch::Receiver<bool>, max_connections: u32) -> Arc<Self> {
+    pub fn start(framed: FramedTunnel, shutdown: tokio::sync::watch::Receiver<bool>, max_connections: u32, domain_filter: Arc<DomainFilter>) -> Arc<Self> {
         let (write_half, read_half) = framed.split();
 
         let (tunnel_tx, tunnel_rx) = mpsc::channel::<Frame>(256);
@@ -61,6 +63,7 @@ impl Multiplexer {
             tunnel_tx: tunnel_tx.clone(),
             last_heartbeat: last_heartbeat.clone(),
             max_connections,
+            domain_filter: domain_filter.clone(),
         });
 
         // Spawn tunnel writer task: drains tunnel_rx and writes to the tunnel.
@@ -72,6 +75,7 @@ impl Multiplexer {
             connections.clone(),
             tunnel_tx.clone(),
             last_heartbeat.clone(),
+            domain_filter,
         ));
 
         // Spawn heartbeat sender.
@@ -226,6 +230,17 @@ impl Multiplexer {
         info!("connection drain complete");
     }
 
+    /// Send a DOMAIN_LIST_REQUEST frame to the server on the control channel.
+    pub async fn request_domain_list(&self) -> Result<()> {
+        let frame = Frame::new(0, FrameType::DomainListRequest, Bytes::new());
+        self.tunnel_tx
+            .send(frame)
+            .await
+            .context("sending DOMAIN_LIST_REQUEST")?;
+        debug!("sent DOMAIN_LIST_REQUEST");
+        Ok(())
+    }
+
     // --- Internal tasks ---
 
     async fn tunnel_write_loop(
@@ -246,6 +261,7 @@ impl Multiplexer {
         connections: Arc<DashMap<u32, Connection>>,
         _tunnel_tx: TunnelSender,
         last_heartbeat: Arc<tokio::sync::Mutex<Instant>>,
+        domain_filter: Arc<DomainFilter>,
     ) {
         while let Some(result) = stream.next().await {
             match result {
@@ -270,6 +286,17 @@ impl Multiplexer {
                         FrameType::AuthFail => {
                             error!("received AUTH_FAIL from server, tunnel closing");
                             break;
+                        }
+                        FrameType::DomainListResponse => {
+                            match serde_json::from_slice::<Vec<String>>(&frame.payload) {
+                                Ok(domains) => {
+                                    info!(count = domains.len(), "received domain list from server");
+                                    domain_filter.update(domains);
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "failed to parse domain list response");
+                                }
+                            }
                         }
                         other => {
                             warn!(frame_type = ?other, "unexpected frame type from server");

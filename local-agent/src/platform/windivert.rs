@@ -29,6 +29,9 @@ use tracing::{debug, error, info, trace};
 use windivert::prelude::*;
 use windivert::layer;
 
+/// Embedded WinDivert64.sys driver binary (extracted next to exe at runtime).
+const WINDIVERT_SYS: &[u8] = include_bytes!("../../resources/WinDivert64.sys");
+
 /// Raw FFI declarations for WinDivert functions not exposed by the Rust crate.
 mod ffi {
     pub const WINDIVERT_SHUTDOWN_BOTH: u32 = 3;
@@ -79,6 +82,32 @@ pub struct WinDivertInterceptor {
 }
 
 impl WinDivertInterceptor {
+    /// Extract the embedded WinDivert64.sys next to the running executable.
+    ///
+    /// Skips extraction if the file already exists with the correct size,
+    /// avoiding unnecessary writes on every startup.
+    fn ensure_driver_extracted() -> Result<()> {
+        let exe_path = std::env::current_exe().context("getting current exe path")?;
+        let driver_path = exe_path
+            .parent()
+            .context("getting exe directory")?
+            .join("WinDivert64.sys");
+
+        // Skip if already present with correct size
+        if let Ok(meta) = std::fs::metadata(&driver_path) {
+            if meta.len() == WINDIVERT_SYS.len() as u64 {
+                debug!(path = %driver_path.display(), "WinDivert64.sys already present");
+                return Ok(());
+            }
+            info!(path = %driver_path.display(), "WinDivert64.sys size mismatch, re-extracting");
+        }
+
+        std::fs::write(&driver_path, WINDIVERT_SYS)
+            .with_context(|| format!("writing WinDivert64.sys to {}", driver_path.display()))?;
+        info!(path = %driver_path.display(), size = WINDIVERT_SYS.len(), "extracted embedded WinDivert64.sys");
+        Ok(())
+    }
+
     /// Start the WinDivert interceptor.
     ///
     /// Opens NETWORK-layer handles (outbound + inbound) for packet NAT and a
@@ -96,6 +125,9 @@ impl WinDivertInterceptor {
         excluded_pids: Vec<u32>,
     ) -> Result<Self> {
         info!("WinDivert interceptor starting");
+
+        // Extract embedded WinDivert64.sys next to the exe if missing or outdated.
+        Self::ensure_driver_extracted()?;
 
         // With static linking, the WinDivert C code's DllEntry is never called
         // automatically. We must call it to initialize the C-side TLS index

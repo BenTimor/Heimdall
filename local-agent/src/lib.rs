@@ -7,3 +7,4 @@ pub mod sni;
 pub mod transparent;
 pub mod platform;
 pub mod state;
+pub mod domain_filter;

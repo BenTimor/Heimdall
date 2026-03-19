@@ -10,7 +10,7 @@ Secret-injecting HTTPS CONNECT proxy. Clients set `HTTPS_PROXY=http://machineId:
 pnpm install          # install deps
 pnpm run build        # tsup → dist/
 pnpm run dev          # tsx src/index.ts (hot reload)
-pnpm test             # vitest run (all 157 tests)
+pnpm test             # vitest run (all 164 tests)
 pnpm test:watch       # vitest in watch mode
 pnpm run lint         # tsc --noEmit
 pnpm run generate-ca  # create certs/ca.crt + ca.key
@@ -123,7 +123,7 @@ Optional `panel` config enables the admin panel (`PanelConfigSchema`): port, hos
 ### Tunnel Protocol (Binary Framing)
 Frame format: `[ConnID: 4B BE][Type: 1B][PayloadLen: 4B BE][Payload]`. Header = 9 bytes. Max payload = 65536 bytes. ConnID 0 = control channel.
 
-Frame types: NEW_CONNECTION(0x01), DATA(0x02), CLOSE(0x03), AUTH(0x04), AUTH_OK(0x05), AUTH_FAIL(0x06), HEARTBEAT(0x07), HEARTBEAT_ACK(0x08).
+Frame types: NEW_CONNECTION(0x01), DATA(0x02), CLOSE(0x03), AUTH(0x04), AUTH_OK(0x05), AUTH_FAIL(0x06), HEARTBEAT(0x07), HEARTBEAT_ACK(0x08), DOMAIN_LIST_REQUEST(0x09), DOMAIN_LIST_RESPONSE(0x0A).
 
 Cross-language compatible — hardcoded hex fixtures verified in both Node.js and Rust test suites.
 
@@ -133,6 +133,7 @@ Cross-language compatible — hardcoded hex fixtures verified in both Node.js an
 - Dispatches frames: NEW_CONNECTION creates VirtualSocket → routes to `ProxyServer.handleTunnelConnection()`
 - VirtualSocket extends Duplex: writes become DATA frames, DATA frames become readable data
 - Heartbeat checker disconnects stale agents after timeout
+- DOMAIN_LIST_REQUEST → calls `ProxyServer.getSecretDomains()` → responds with DOMAIN_LIST_RESPONSE (JSON array of domain patterns)
 
 ### Tunnel Mode (MITM + Passthrough)
 When `tunnelMode: true` in MitmDeps or PassthroughOptions:

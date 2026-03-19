@@ -168,6 +168,8 @@ describe("tunnel protocol", () => {
       [FrameType.AUTH_FAIL, "AUTH_FAIL", Buffer.from("bad credentials")],
       [FrameType.HEARTBEAT, "HEARTBEAT", Buffer.alloc(0)],
       [FrameType.HEARTBEAT_ACK, "HEARTBEAT_ACK", Buffer.alloc(0)],
+      [FrameType.DOMAIN_LIST_REQUEST, "DOMAIN_LIST_REQUEST", Buffer.alloc(0)],
+      [FrameType.DOMAIN_LIST_RESPONSE, "DOMAIN_LIST_RESPONSE", Buffer.from('["api.openai.com","*.example.com"]')],
     ];
 
     for (const [type, name, payload] of frameTypes) {
@@ -282,6 +284,51 @@ describe("tunnel protocol", () => {
       expect(frames[0].payload.length).toBe(0);
     });
 
+    it("DOMAIN_LIST_REQUEST frame: connId=0, empty payload", () => {
+      const encoded = encodeFrame(0, FrameType.DOMAIN_LIST_REQUEST);
+      const expected = Buffer.from(
+        "00000000" + "09" + "00000000",
+        "hex"
+      );
+      expect(Buffer.compare(encoded, expected)).toBe(0);
+    });
+
+    it("DOMAIN_LIST_RESPONSE frame: connId=0, JSON payload", () => {
+      const payload = Buffer.from('["api.openai.com"]');
+      const encoded = encodeFrame(0, FrameType.DOMAIN_LIST_RESPONSE, payload);
+      const expected = Buffer.from(
+        "00000000" + "0a" + "00000012" + Buffer.from('["api.openai.com"]').toString("hex"),
+        "hex"
+      );
+      expect(Buffer.compare(encoded, expected)).toBe(0);
+    });
+
+    it("decodes cross-language DOMAIN_LIST_REQUEST fixture", () => {
+      const raw = Buffer.from(
+        "00000000" + "09" + "00000000",
+        "hex"
+      );
+      const decoder = new FrameDecoder();
+      const frames = decoder.decode(raw);
+      expect(frames).toHaveLength(1);
+      expect(frames[0].connId).toBe(0);
+      expect(frames[0].type).toBe(FrameType.DOMAIN_LIST_REQUEST);
+      expect(frames[0].payload.length).toBe(0);
+    });
+
+    it("decodes cross-language DOMAIN_LIST_RESPONSE fixture", () => {
+      const raw = Buffer.from(
+        "00000000" + "0a" + "00000012" + Buffer.from('["api.openai.com"]').toString("hex"),
+        "hex"
+      );
+      const decoder = new FrameDecoder();
+      const frames = decoder.decode(raw);
+      expect(frames).toHaveLength(1);
+      expect(frames[0].connId).toBe(0);
+      expect(frames[0].type).toBe(FrameType.DOMAIN_LIST_RESPONSE);
+      expect(JSON.parse(frames[0].payload.toString())).toEqual(["api.openai.com"]);
+    });
+
     it("decodes all three cross-language fixtures concatenated", () => {
       const raw = Buffer.from(
         "00000000" + "04" + "00000011" + "6d616368696e65313a746f6b656e313233" +
@@ -315,6 +362,8 @@ describe("tunnel protocol", () => {
       expect(FrameType.AUTH_FAIL).toBe(0x06);
       expect(FrameType.HEARTBEAT).toBe(0x07);
       expect(FrameType.HEARTBEAT_ACK).toBe(0x08);
+      expect(FrameType.DOMAIN_LIST_REQUEST).toBe(0x09);
+      expect(FrameType.DOMAIN_LIST_RESPONSE).toBe(0x0A);
     });
   });
 });

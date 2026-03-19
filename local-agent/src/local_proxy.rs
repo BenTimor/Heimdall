@@ -5,12 +5,13 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use dashmap::DashMap;
 use subtle::ConstantTimeEq;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{copy_bidirectional, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
 use crate::config::LocalProxyConfig;
+use crate::domain_filter::DomainFilter;
 use crate::tunnel::multiplexer::Multiplexer;
 
 /// Maximum number of concurrent proxy connections.
@@ -25,6 +26,7 @@ pub async fn run_local_proxy(
     config: &LocalProxyConfig,
     multiplexer: Arc<Multiplexer>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    domain_filter: Arc<DomainFilter>,
 ) -> Result<()> {
     let addr = format!("{}:{}", config.host, config.port);
     let listener = TcpListener::bind(&addr)
@@ -54,6 +56,7 @@ pub async fn run_local_proxy(
                         let mux = multiplexer.clone();
                         let auth = auth_token.clone();
                         let per_ip = per_ip_counts.clone();
+                        let df = domain_filter.clone();
                         let sem = semaphore.clone();
                         let permit = match sem.acquire_owned().await {
                             Ok(permit) => permit,
@@ -66,7 +69,7 @@ pub async fn run_local_proxy(
                             warn!("local proxy at max concurrent connections ({})", MAX_CONCURRENT_CONNECTIONS);
                         }
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connect(stream, mux, auth.as_deref()).await {
+                            if let Err(e) = handle_connect(stream, mux, auth.as_deref(), &df).await {
                                 warn!(peer = %peer, error = %e, "CONNECT handling failed");
                             }
                             if let Some(mut count) = per_ip.get_mut(&ip) {
@@ -90,7 +93,7 @@ pub async fn run_local_proxy(
 }
 
 /// Handle one CONNECT request.
-async fn handle_connect(stream: TcpStream, mux: Arc<Multiplexer>, auth_token: Option<&str>) -> Result<()> {
+async fn handle_connect(stream: TcpStream, mux: Arc<Multiplexer>, auth_token: Option<&str>, domain_filter: &DomainFilter) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut buf_reader = BufReader::new(reader);
 
@@ -162,6 +165,28 @@ async fn handle_connect(stream: TcpStream, mux: Arc<Multiplexer>, auth_token: Op
     let stream = reader
         .reunite(writer)
         .map_err(|_| anyhow::anyhow!("failed to reunite stream halves"))?;
+
+    // Check if this domain needs tunneling
+    if !domain_filter.matches(&host) {
+        // Direct passthrough — no secrets for this domain
+        debug!(host = %host, port, "direct passthrough (no matching secrets)");
+        let mut target = TcpStream::connect(format!("{}:{}", host, port))
+            .await
+            .context("connecting to target for direct passthrough")?;
+
+        let (read_half, mut write_half) = stream.into_split();
+        write_half
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await
+            .context("sending 200 to CONNECT client")?;
+
+        let mut client_stream = read_half
+            .reunite(write_half)
+            .map_err(|_| anyhow::anyhow!("failed to reunite stream halves"))?;
+
+        let _ = copy_bidirectional(&mut client_stream, &mut target).await;
+        return Ok(());
+    }
 
     // Send 200 Connection Established, then hand off to multiplexer.
     let (read_half, mut write_half) = stream.into_split();

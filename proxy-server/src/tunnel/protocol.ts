@@ -17,6 +17,8 @@ export enum FrameType {
   AUTH_FAIL = 0x06,
   HEARTBEAT = 0x07,
   HEARTBEAT_ACK = 0x08,
+  DOMAIN_LIST_REQUEST = 0x09,
+  DOMAIN_LIST_RESPONSE = 0x0A,
 }
 
 export interface Frame {

@@ -1,5 +1,6 @@
 mod agent;
 mod config;
+mod domain_filter;
 mod health;
 mod local_proxy;
 mod platform;
@@ -517,5 +518,38 @@ fn init_tracing(level: &str) {
         .unwrap_or_else(|_| EnvFilter::new(level));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_ansi(enable_ansi_support())
         .init();
+}
+
+/// Enable ANSI color support on Windows and return whether it's available.
+///
+/// Windows consoles need `ENABLE_VIRTUAL_TERMINAL_PROCESSING` set explicitly.
+/// Returns false if stderr isn't a terminal or the mode can't be set.
+fn enable_ansi_support() -> bool {
+    #[cfg(windows)]
+    {
+        const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+        const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
+        extern "system" {
+            fn GetStdHandle(n: u32) -> isize;
+            fn GetConsoleMode(h: isize, mode: *mut u32) -> i32;
+            fn SetConsoleMode(h: isize, mode: u32) -> i32;
+        }
+        unsafe {
+            let handle = GetStdHandle(STD_ERROR_HANDLE);
+            if handle == -1 || handle == 0 {
+                return false;
+            }
+            let mut mode: u32 = 0;
+            if GetConsoleMode(handle, &mut mode) == 0 {
+                return false;
+            }
+            SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::io::IsTerminal::is_terminal(&std::io::stderr())
+    }
 }

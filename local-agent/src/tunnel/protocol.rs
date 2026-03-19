@@ -33,6 +33,8 @@ pub enum FrameType {
     AuthFail = 0x06,
     Heartbeat = 0x07,
     HeartbeatAck = 0x08,
+    DomainListRequest = 0x09,
+    DomainListResponse = 0x0A,
 }
 
 impl FrameType {
@@ -46,6 +48,8 @@ impl FrameType {
             0x06 => Ok(FrameType::AuthFail),
             0x07 => Ok(FrameType::Heartbeat),
             0x08 => Ok(FrameType::HeartbeatAck),
+            0x09 => Ok(FrameType::DomainListRequest),
+            0x0A => Ok(FrameType::DomainListResponse),
             other => Err(ProtocolError::UnknownFrameType(other)),
         }
     }

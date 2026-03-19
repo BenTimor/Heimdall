@@ -42,7 +42,7 @@ Guardian/
       panel/              # Admin panel (Fastify, SQLite, vanilla SPA)
       config/             # Zod schemas + YAML loader
       utils/              # Logger, domain matcher
-    tests/                # 19 test files (157 tests)
+    tests/                # 19 test files (164 tests)
 
   local-agent/            # Rust — developer machine daemon
     src/
@@ -55,12 +55,13 @@ Guardian/
       main.rs             # CLI: run, test, status, install, uninstall, service
       agent.rs            # Lifecycle orchestrator
       config.rs           # YAML config (+ TransparentConfig + InterceptionMethod)
+      domain_filter.rs    # Domain-based tunnel/direct routing
       local_proxy.rs      # HTTP CONNECT proxy (port 19080)
       transparent.rs      # Transparent TCP listener (port 19443, SNI-based)
       sni.rs              # TLS ClientHello SNI extraction
       health.rs           # Health endpoint (port 19876)
       state.rs            # Install state persistence
-    tests/                # 2 test files (36 tests)
+    tests/                # 2 test files (60 tests)
 ```
 
 ## Architecture
@@ -81,9 +82,14 @@ Developer Machine                          Server
 └──────────────────────────┘              └────────────────────────────────┘
 ```
 
+### Domain-based filtering
+After AUTH_OK, the agent sends `DOMAIN_LIST_REQUEST` on the control channel (conn_id 0). The server responds with `DOMAIN_LIST_RESPONSE` containing a JSON array of domain patterns (exact or `*.wildcard`). The agent polls every 10 seconds. Connections to non-matching domains bypass the tunnel entirely (direct TCP passthrough), reducing latency and server load.
+
 ### Data flow — Explicit proxy mode
 1. App sets `HTTPS_PROXY=http://127.0.0.1:19080` and sends `Authorization: Bearer __OPENAI_KEY__`
-2. Local agent accepts CONNECT, forwards as NEW_CONNECTION frame through tunnel
+2. Local agent accepts CONNECT, checks domain against filter
+   - **No match** → direct TCP passthrough to target (no tunnel)
+   - **Match** → forwards as NEW_CONNECTION frame through tunnel
 3. Tunnel server creates VirtualSocket, routes to ProxyServer.handleTunnelConnection()
 4. Proxy performs MITM: decrypt TLS → scan headers → inject secrets → forward to real API
 5. Response flows back through the same path
@@ -93,12 +99,13 @@ Developer Machine                          Server
    - Windows: WinDivert (packet-level NAT rewrite, captures all apps) or system proxy (registry)
    - Linux: iptables REDIRECT with UID exclusion
 2. Listener peeks at TLS ClientHello, extracts hostname via SNI
-3. Forwards connection as NEW_CONNECTION frame through tunnel (same as above)
+3. Checks domain against filter — **no match** → direct passthrough; **match** → tunnel
+4. Forwards connection as NEW_CONNECTION frame through tunnel (same as above)
 4. No per-app proxy configuration needed
 
 ### Tunnel Protocol
 Binary framing over TLS: `[ConnID: 4B BE][Type: 1B][PayloadLen: 4B BE][Payload]`
-Frame types: NEW_CONNECTION(0x01), DATA(0x02), CLOSE(0x03), AUTH(0x04), AUTH_OK(0x05), AUTH_FAIL(0x06), HEARTBEAT(0x07), HEARTBEAT_ACK(0x08)
+Frame types: NEW_CONNECTION(0x01), DATA(0x02), CLOSE(0x03), AUTH(0x04), AUTH_OK(0x05), AUTH_FAIL(0x06), HEARTBEAT(0x07), HEARTBEAT_ACK(0x08), DOMAIN_LIST_REQUEST(0x09), DOMAIN_LIST_RESPONSE(0x0A)
 Cross-language compatible — identical hex fixtures in both test suites.
 
 ## Conventions

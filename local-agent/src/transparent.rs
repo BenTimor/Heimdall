@@ -3,11 +3,13 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use dashmap::DashMap;
-use tokio::net::TcpListener;
+use tokio::io::copy_bidirectional;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
 use crate::config::TransparentConfig;
+use crate::domain_filter::DomainFilter;
 use crate::sni;
 use crate::tunnel::multiplexer::Multiplexer;
 
@@ -27,6 +29,7 @@ pub async fn run_transparent_listener(
     config: &TransparentConfig,
     multiplexer: Arc<Multiplexer>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    domain_filter: Arc<DomainFilter>,
 ) -> Result<()> {
     let addr = format!("{}:{}", config.host, config.port);
     let listener = TcpListener::bind(&addr)
@@ -54,6 +57,7 @@ pub async fn run_transparent_listener(
                         }
                         let mux = multiplexer.clone();
                         let per_ip = per_ip_counts.clone();
+                        let df = domain_filter.clone();
                         let sem = semaphore.clone();
                         let permit = match sem.acquire_owned().await {
                             Ok(permit) => permit,
@@ -66,7 +70,7 @@ pub async fn run_transparent_listener(
                             warn!("transparent listener at max concurrent connections ({})", MAX_CONCURRENT_CONNECTIONS);
                         }
                         tokio::spawn(async move {
-                            if let Err(e) = handle_transparent(stream, mux).await {
+                            if let Err(e) = handle_transparent(stream, mux, &df).await {
                                 debug!(peer = %peer, error = %e, "transparent connection failed");
                             }
                             if let Some(mut count) = per_ip.get_mut(&ip) {
@@ -96,6 +100,7 @@ pub async fn run_transparent_listener(
 async fn handle_transparent(
     stream: tokio::net::TcpStream,
     mux: Arc<Multiplexer>,
+    domain_filter: &DomainFilter,
 ) -> Result<()> {
     // Peek at the ClientHello without consuming it from the kernel buffer.
     let mut buf = [0u8; 4096];
@@ -116,6 +121,19 @@ async fn handle_transparent(
     }
 
     debug!(hostname = %hostname, "extracted SNI from transparent connection");
+
+    // Check if this domain needs tunneling
+    if !domain_filter.matches(&hostname) {
+        // Direct passthrough — no secrets for this domain
+        debug!(hostname = %hostname, "direct passthrough (no matching secrets)");
+        let mut target = TcpStream::connect(format!("{}:{}", hostname, 443))
+            .await
+            .context("connecting to target for direct passthrough")?;
+
+        let mut stream = stream;
+        let _ = copy_bidirectional(&mut stream, &mut target).await;
+        return Ok(());
+    }
 
     let conn_id = mux
         .new_connection(stream, &hostname, 443)

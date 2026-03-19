@@ -8,7 +8,7 @@ Rust daemon that tunnels HTTPS traffic from developer machines to the Guardian p
 
 ```bash
 cargo build --release     # build
-cargo test                # run tests (36 passing)
+cargo test                # run tests (60 passing)
 cargo run -- run          # start agent (default config)
 cargo run -- test         # test tunnel connectivity
 cargo run -- status       # query health endpoint
@@ -54,6 +54,7 @@ src/
   main.rs             # clap CLI: run, test, status, install, uninstall, service
   agent.rs            # Orchestrator: tunnel → proxy + health + transparent → event loop
   config.rs           # AgentConfig: serde YAML (+ TransparentConfig + InterceptionMethod)
+  domain_filter.rs    # Domain-based tunnel/direct routing filter
   local_proxy.rs      # HTTP CONNECT proxy on localhost:19080
   transparent.rs      # Transparent TCP listener on 0.0.0.0:19443 (SNI-based)
   sni.rs              # TLS ClientHello SNI extraction (manual parser, no deps)
@@ -84,7 +85,14 @@ Frame format: `[ConnID: 4B BE][Type: 1B][PayloadLen: 4B BE][Payload]`. Header = 
 
 `FrameCodec` implements `tokio_util::codec::{Decoder, Encoder}` for use with `Framed<T>`. This gives us automatic TCP fragmentation handling.
 
-Frame types: NewConnection(0x01), Data(0x02), Close(0x03), Auth(0x04), AuthOk(0x05), AuthFail(0x06), Heartbeat(0x07), HeartbeatAck(0x08).
+Frame types: NewConnection(0x01), Data(0x02), Close(0x03), Auth(0x04), AuthOk(0x05), AuthFail(0x06), Heartbeat(0x07), HeartbeatAck(0x08), DomainListRequest(0x09), DomainListResponse(0x0A).
+
+### Domain Filter (`domain_filter.rs`)
+- `DomainFilter` stores domain patterns from the server (via `DOMAIN_LIST_RESPONSE` frames)
+- Thread-safe: `RwLock<Vec<String>>` — concurrent reads from proxy/transparent handlers, rare writes on update
+- Matching: exact (case-insensitive) and wildcard prefix (`*.example.com` matches `sub.example.com`, not `example.com`)
+- Agent requests domain list after AUTH_OK, then polls every 10 seconds
+- When no domains match, connections go direct (bypass tunnel); when list is empty, nothing is tunneled
 
 ### SNI Parser (`sni.rs`)
 Manual TLS ClientHello parser — no external dependencies. Walks the byte structure:

@@ -67,6 +67,7 @@ describe("TunnelServer", () => {
     tlsCert = createSelfSignedCert();
     logger = createMockLogger();
     handleTunnelConnectionMock = vi.fn();
+    const getSecretDomainsMock = vi.fn().mockReturnValue(["api.openai.com", "*.anthropic.com"]);
 
     const tunnelConfig: TunnelConfig = {
       enabled: true,
@@ -85,6 +86,7 @@ describe("TunnelServer", () => {
 
     const mockProxy = {
       handleTunnelConnection: handleTunnelConnectionMock,
+      getSecretDomains: getSecretDomainsMock,
     } as unknown as ProxyServer;
 
     tunnelServer = new TunnelServer({
@@ -274,5 +276,47 @@ describe("TunnelServer", () => {
       expect.objectContaining({ machineId: "agent-1" }),
       "Tunnel agent disconnected",
     );
+  });
+
+  it("responds to DOMAIN_LIST_REQUEST with domain list", async () => {
+    const socket = await connectToTunnel(tunnelPort, tlsCert.cert);
+    const decoder = new FrameDecoder();
+
+    // Auth first
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("timeout")), 5000);
+      socket.on("data", function handler(chunk: Buffer) {
+        const frames = decoder.decode(chunk);
+        for (const frame of frames) {
+          if (frame.type === FrameType.AUTH_OK) {
+            clearTimeout(timeout);
+            socket.removeListener("data", handler);
+            resolve();
+          }
+        }
+      });
+      socket.write(encodeFrame(0, FrameType.AUTH, Buffer.from("agent-1:secret-token")));
+    });
+
+    // Send DOMAIN_LIST_REQUEST
+    const domainListPromise = new Promise<string[]>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("timeout")), 5000);
+      socket.on("data", function handler(chunk: Buffer) {
+        const frames = decoder.decode(chunk);
+        for (const frame of frames) {
+          if (frame.type === FrameType.DOMAIN_LIST_RESPONSE) {
+            clearTimeout(timeout);
+            socket.removeListener("data", handler);
+            resolve(JSON.parse(frame.payload.toString()));
+          }
+        }
+      });
+    });
+
+    socket.write(encodeFrame(0, FrameType.DOMAIN_LIST_REQUEST));
+    const domains = await domainListPromise;
+    expect(domains).toEqual(expect.arrayContaining(["api.openai.com", "*.anthropic.com"]));
+    expect(domains).toHaveLength(2);
+    socket.destroy();
   });
 });

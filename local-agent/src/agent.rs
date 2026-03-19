@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use tracing::{error, info, warn};
 
 use crate::config::AgentConfig;
+use crate::domain_filter::DomainFilter;
 use crate::health::{self, HealthState};
 use crate::local_proxy;
 use crate::transparent;
@@ -31,9 +32,35 @@ pub async fn run(config: AgentConfig) -> Result<()> {
 
     let started_at = Instant::now();
 
-    // Start multiplexer
+    // Start multiplexer with domain filter
     let max_connections = config.tunnel.as_ref().map_or(1000, |t| t.max_connections);
-    let multiplexer = Multiplexer::start(framed, shutdown_rx.clone(), max_connections);
+    let domain_filter = Arc::new(DomainFilter::new());
+    let multiplexer = Multiplexer::start(framed, shutdown_rx.clone(), max_connections, domain_filter.clone());
+
+    // Request initial domain list and start polling
+    if let Err(e) = multiplexer.request_domain_list().await {
+        warn!(error = %e, "failed to send initial domain list request");
+    }
+
+    let poll_mux = multiplexer.clone();
+    let mut poll_shutdown = shutdown_rx.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        interval.tick().await; // skip immediate first tick (already sent above)
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if let Err(e) = poll_mux.request_domain_list().await {
+                        warn!(error = %e, "domain list polling failed, tunnel may be down");
+                        break;
+                    }
+                }
+                _ = poll_shutdown.changed() => {
+                    break;
+                }
+            }
+        }
+    });
 
     // Start health endpoint
     let health_state = Arc::new(HealthState {
@@ -53,8 +80,9 @@ pub async fn run(config: AgentConfig) -> Result<()> {
     let proxy_config = config.local_proxy.clone();
     let proxy_mux = multiplexer.clone();
     let proxy_shutdown = shutdown_rx.clone();
+    let proxy_domain_filter = domain_filter.clone();
     let proxy_handle = tokio::spawn(async move {
-        if let Err(e) = local_proxy::run_local_proxy(&proxy_config, proxy_mux, proxy_shutdown).await {
+        if let Err(e) = local_proxy::run_local_proxy(&proxy_config, proxy_mux, proxy_shutdown, proxy_domain_filter).await {
             error!(error = %e, "local proxy error");
         }
     });
@@ -64,9 +92,10 @@ pub async fn run(config: AgentConfig) -> Result<()> {
         let transparent_config = config.transparent.clone();
         let transparent_mux = multiplexer.clone();
         let transparent_shutdown = shutdown_rx.clone();
+        let transparent_domain_filter = domain_filter.clone();
         Some(tokio::spawn(async move {
             if let Err(e) =
-                transparent::run_transparent_listener(&transparent_config, transparent_mux, transparent_shutdown)
+                transparent::run_transparent_listener(&transparent_config, transparent_mux, transparent_shutdown, transparent_domain_filter)
                     .await
             {
                 error!(error = %e, "transparent listener error");

@@ -270,6 +270,8 @@ fn zero_length_payload_all_types() {
         FrameType::AuthFail,
         FrameType::Heartbeat,
         FrameType::HeartbeatAck,
+        FrameType::DomainListRequest,
+        FrameType::DomainListResponse,
     ];
 
     for ft in types {
@@ -351,6 +353,8 @@ fn frame_type_round_trips() {
         (0x06, FrameType::AuthFail),
         (0x07, FrameType::Heartbeat),
         (0x08, FrameType::HeartbeatAck),
+        (0x09, FrameType::DomainListRequest),
+        (0x0A, FrameType::DomainListResponse),
     ];
     for (byte, expected) in types {
         let ft = FrameType::from_u8(byte).unwrap();
@@ -362,6 +366,81 @@ fn frame_type_round_trips() {
 #[test]
 fn frame_type_rejects_invalid() {
     assert!(FrameType::from_u8(0x00).is_err());
-    assert!(FrameType::from_u8(0x09).is_err());
+    assert!(FrameType::from_u8(0x0B).is_err());
     assert!(FrameType::from_u8(0xFF).is_err());
+}
+
+// ===========================================================================
+// New frame types: DomainListRequest, DomainListResponse
+// ===========================================================================
+
+#[test]
+fn roundtrip_domain_list_request() {
+    let frame = Frame::new(0, FrameType::DomainListRequest, Bytes::new());
+    let buf = encode(frame.clone());
+    let decoded = decode_all(buf);
+    assert_eq!(decoded, vec![frame]);
+}
+
+#[test]
+fn roundtrip_domain_list_response() {
+    let payload = Bytes::from(r#"["api.openai.com","*.example.com"]"#);
+    let frame = Frame::new(0, FrameType::DomainListResponse, payload);
+    let buf = encode(frame.clone());
+    let decoded = decode_all(buf);
+    assert_eq!(decoded, vec![frame]);
+}
+
+#[test]
+fn cross_lang_domain_list_request_frame() {
+    let frame = Frame::new(0, FrameType::DomainListRequest, Bytes::new());
+    let buf = encode(frame);
+
+    let expected: Vec<u8> = vec![
+        0x00, 0x00, 0x00, 0x00, // conn_id = 0
+        0x09,                   // frame_type = DomainListRequest
+        0x00, 0x00, 0x00, 0x00, // payload_length = 0
+    ];
+    assert_eq!(&buf[..], &expected[..]);
+}
+
+#[test]
+fn cross_lang_domain_list_response_frame() {
+    let payload_str = r#"["api.openai.com"]"#;
+    let frame = Frame::new(0, FrameType::DomainListResponse, Bytes::from(payload_str));
+    let buf = encode(frame);
+
+    let mut expected = vec![
+        0x00, 0x00, 0x00, 0x00, // conn_id = 0
+        0x0a,                   // frame_type = DomainListResponse
+        0x00, 0x00, 0x00, 0x12, // payload_length = 18
+    ];
+    expected.extend_from_slice(payload_str.as_bytes());
+    assert_eq!(&buf[..], &expected[..]);
+}
+
+#[test]
+fn cross_lang_decode_domain_list_request_from_hex() {
+    let raw: Vec<u8> = vec![
+        0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00,
+    ];
+    let frames = decode_all(BytesMut::from(&raw[..]));
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].conn_id, 0);
+    assert_eq!(frames[0].frame_type, FrameType::DomainListRequest);
+    assert!(frames[0].payload.is_empty());
+}
+
+#[test]
+fn cross_lang_decode_domain_list_response_from_hex() {
+    let payload_str = r#"["api.openai.com"]"#;
+    let mut raw: Vec<u8> = vec![
+        0x00, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x12,
+    ];
+    raw.extend_from_slice(payload_str.as_bytes());
+    let frames = decode_all(BytesMut::from(&raw[..]));
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].conn_id, 0);
+    assert_eq!(frames[0].frame_type, FrameType::DomainListResponse);
+    assert_eq!(frames[0].payload, payload_str.as_bytes());
 }
