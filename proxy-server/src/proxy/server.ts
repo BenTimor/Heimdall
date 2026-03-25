@@ -166,6 +166,12 @@ export class ProxyServer {
   private handleConnect(req: http.IncomingMessage, clientSocket: Socket, head: Buffer): void {
     const { logger, config } = this.deps;
 
+    // Register error handler early — after CONNECT upgrade, the HTTP server's
+    // clientError handler no longer covers this socket.
+    clientSocket.on("error", (err) => {
+      logger.debug({ err }, "Client socket error (CONNECT)");
+    });
+
     // Parse target host:port from the CONNECT request
     const target = req.url;
     if (!target) {
@@ -293,6 +299,13 @@ export class ProxyServer {
     const { logger, config } = this.deps;
 
     logger.debug({ target: `${targetHost}:${targetPort}`, machineId }, "Tunnel connection");
+
+    // VirtualSocket extends Duplex, not net.Socket — TLSSocket wrapping a Duplex
+    // does NOT auto-forward error events.  Register a handler so errors during
+    // session teardown (e.g. tunnel agent disconnect) don't crash the process.
+    socket.on("error", (err) => {
+      logger.debug({ err, target: `${targetHost}:${targetPort}`, machineId }, "Tunnel virtual socket error");
+    });
 
     const isBypassed = matchesAnyDomain(targetHost, config.bypass.domains);
     const hasSecretConfig = this.hasSecretsForDomain(targetHost);

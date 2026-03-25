@@ -203,6 +203,16 @@ async function main() {
 
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+  // Safety nets — prevent the process from crashing on stray socket errors.
+  // Every socket SHOULD have its own error handler, but if one is missed
+  // (e.g. race during tunnel teardown), log it instead of crashing.
+  process.on("uncaughtException", (err) => {
+    logger.error({ err }, "Uncaught exception");
+  });
+  process.on("unhandledRejection", (reason) => {
+    logger.error({ err: reason }, "Unhandled rejection");
+  });
 }
 
 main().catch((err) => {
