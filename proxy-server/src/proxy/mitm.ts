@@ -175,22 +175,35 @@ function forwardToTarget(
       },
     );
 
-    targetSocket.on("end", () => {
-      resolve();
-    });
+    const cleanup = () => {
+      targetSocket.removeListener("end", onEnd);
+      targetSocket.removeListener("error", onTargetError);
+      clientTls.removeListener("error", onClientError);
+    };
 
-    targetSocket.on("error", (err) => {
+    const onEnd = () => {
+      cleanup();
+      resolve();
+    };
+
+    const onTargetError = (err: Error) => {
+      cleanup();
       logger.warn({ err, target: `${targetHost}:${targetPort}` }, "Target connection error (MITM)");
       if (!clientTls.destroyed) {
         const errorResponse = `HTTP/1.1 502 Bad Gateway\r\nContent-Length: 15\r\nConnection: close\r\n\r\n502 Bad Gateway`;
         clientTls.write(errorResponse);
       }
       resolve();
-    });
+    };
 
-    clientTls.on("error", () => {
+    const onClientError = () => {
+      cleanup();
       if (!targetSocket.destroyed) targetSocket.destroy();
       resolve();
-    });
+    };
+
+    targetSocket.on("end", onEnd);
+    targetSocket.on("error", onTargetError);
+    clientTls.on("error", onClientError);
   });
 }

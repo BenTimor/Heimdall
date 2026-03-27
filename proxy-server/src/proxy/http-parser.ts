@@ -38,30 +38,38 @@ export class SocketReader {
   private waiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
   private error: Error | null = null;
 
+  // Store bound handler references so detach() removes only OUR listeners
+  // (not error handlers registered by handleMitm or forwardToTarget).
+  private onData: (chunk: Buffer) => void;
+  private onEnd: () => void;
+  private onClose: () => void;
+  private onError: (err: Error) => void;
+
   constructor(socket: ReadableSocket) {
     this.socket = socket;
 
-    socket.on("data", (chunk: Buffer) => {
+    this.onData = (chunk: Buffer) => {
       this.buf = Buffer.concat([this.buf, chunk]);
-      // Wake any waiters
       this.flushWaiters();
-    });
-
-    socket.on("end", () => {
+    };
+    this.onEnd = () => {
       this.ended = true;
       this.flushWaiters();
-    });
-
-    socket.on("close", () => {
+    };
+    this.onClose = () => {
       this.ended = true;
       this.flushWaiters();
-    });
-
-    socket.on("error", (err) => {
+    };
+    this.onError = (err: Error) => {
       this.error = err;
       this.ended = true;
       this.flushWaiters();
-    });
+    };
+
+    socket.on("data", this.onData);
+    socket.on("end", this.onEnd);
+    socket.on("close", this.onClose);
+    socket.on("error", this.onError);
   }
 
   private flushWaiters() {
@@ -135,12 +143,14 @@ export class SocketReader {
     return this.socket;
   }
 
-  /** Detach from the socket (stop listening). */
+  /** Detach from the socket (stop listening).
+   *  Only removes the listeners THIS reader attached — preserves error
+   *  handlers registered by handleMitm / forwardToTarget. */
   detach() {
-    this.socket.removeAllListeners("data");
-    this.socket.removeAllListeners("end");
-    this.socket.removeAllListeners("close");
-    this.socket.removeAllListeners("error");
+    this.socket.removeListener("data", this.onData);
+    this.socket.removeListener("end", this.onEnd);
+    this.socket.removeListener("close", this.onClose);
+    this.socket.removeListener("error", this.onError);
   }
 }
 
