@@ -80,5 +80,13 @@ export async function injectSecrets(
     });
   }
 
+  const failed = injections.filter((i) => i.status !== "injected");
+  if (failed.length > 0) {
+    log.info(
+      { targetDomain, failures: failed.map((f) => ({ secretName: f.secretName, status: f.status })) },
+      "Injection failures detected",
+    );
+  }
+
   return { injectedHeaders, injections };
 }

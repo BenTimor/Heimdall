@@ -103,6 +103,10 @@ export async function handleMitm(
         injectedSecrets: injectedNames,
         action: injectedNames.length > 0 ? "injected" : "passthrough",
       };
+      logger.info(
+        { target: `${targetHost}:${targetPort}`, method: parsed.method, injectedSecrets: injectedNames, machineId },
+        "MITM request processed",
+      );
       auditLogger.logRequest(auditEntry);
 
       // Forward to real target — force Connection: close so the target
