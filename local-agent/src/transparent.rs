@@ -37,56 +37,79 @@ pub async fn run_transparent_listener(
         .context(format!("binding transparent listener on {}", addr))?;
     info!(addr = %addr, "transparent listener started");
 
+    // Bind a secondary IPv6 listener so WinDivert hairpin-NAT works for both
+    // address families. On Windows, IPV6_V6ONLY defaults to true, so a single
+    // [::] socket does NOT accept IPv4 — we need both.
+    let v6_addr = format!("[::]:{}", config.port);
+    let v6_listener = TcpListener::bind(&v6_addr).await.ok();
+    if v6_listener.is_some() {
+        info!(addr = %v6_addr, "transparent IPv6 listener started");
+    } else {
+        debug!("IPv6 transparent listener not available (non-fatal)");
+    }
+
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
     let per_ip_counts: Arc<DashMap<IpAddr, usize>> = Arc::new(DashMap::new());
 
+    // Helper future that never resolves (used when v6 listener is absent)
+    async fn never() -> std::io::Result<(TcpStream, std::net::SocketAddr)> {
+        std::future::pending().await
+    }
+
     loop {
-        tokio::select! {
-            result = listener.accept() => {
-                match result {
-                    Ok((stream, peer)) => {
-                        debug!(peer = %peer, "accepted transparent connection");
-                        let ip = peer.ip();
-                        {
-                            let mut count = per_ip_counts.entry(ip).or_insert(0);
-                            if *count >= MAX_CONNECTIONS_PER_IP {
-                                warn!(ip = %ip, "per-IP connection limit reached ({})", MAX_CONNECTIONS_PER_IP);
-                                continue;
-                            }
-                            *count += 1;
-                        }
-                        let mux = multiplexer.clone();
-                        let per_ip = per_ip_counts.clone();
-                        let df = domain_filter.clone();
-                        let sem = semaphore.clone();
-                        let permit = match sem.acquire_owned().await {
-                            Ok(permit) => permit,
-                            Err(_) => {
-                                error!("connection semaphore closed unexpectedly");
-                                break;
-                            }
-                        };
-                        if semaphore.available_permits() == 0 {
-                            warn!("transparent listener at max concurrent connections ({})", MAX_CONCURRENT_CONNECTIONS);
-                        }
-                        tokio::spawn(async move {
-                            if let Err(e) = handle_transparent(stream, mux, &df).await {
-                                debug!(peer = %peer, error = %e, "transparent connection failed");
-                            }
-                            if let Some(mut count) = per_ip.get_mut(&ip) {
-                                *count = count.saturating_sub(1);
-                            }
-                            drop(permit);
-                        });
-                    }
-                    Err(e) => {
-                        error!(error = %e, "accept error on transparent listener");
-                    }
+        // Accept from either the IPv4 or IPv6 listener, or shutdown
+        let accept_result = tokio::select! {
+            r = listener.accept() => r,
+            r = async {
+                match v6_listener.as_ref() {
+                    Some(v6) => v6.accept().await,
+                    None => never().await,
                 }
-            }
+            } => r,
             _ = shutdown.changed() => {
                 info!("transparent listener shutting down");
                 break;
+            }
+        };
+
+        match accept_result {
+            Ok((stream, peer)) => {
+                debug!(peer = %peer, "accepted transparent connection");
+                let ip = peer.ip();
+                {
+                    let mut count = per_ip_counts.entry(ip).or_insert(0);
+                    if *count >= MAX_CONNECTIONS_PER_IP {
+                        warn!(ip = %ip, "per-IP connection limit reached ({})", MAX_CONNECTIONS_PER_IP);
+                        continue;
+                    }
+                    *count += 1;
+                }
+                let mux = multiplexer.clone();
+                let per_ip = per_ip_counts.clone();
+                let df = domain_filter.clone();
+                let sem = semaphore.clone();
+                let permit = match sem.acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        error!("connection semaphore closed unexpectedly");
+                        break;
+                    }
+                };
+                if semaphore.available_permits() == 0 {
+                    warn!("transparent listener at max concurrent connections ({})", MAX_CONCURRENT_CONNECTIONS);
+                }
+                tokio::spawn(async move {
+                    if let Err(e) = handle_transparent(stream, mux, &df).await {
+                        debug!(peer = %peer, error = %e, "transparent connection failed");
+                    }
+                    if let Some(mut count) = per_ip.get_mut(&ip) {
+                        *count = count.saturating_sub(1);
+                    }
+                    drop(permit);
+                });
+            }
+            Err(e) => {
+                error!(error = %e, "accept error on transparent listener");
             }
         }
     }
