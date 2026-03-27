@@ -167,9 +167,10 @@ async fn handle_connect(stream: TcpStream, mux: Arc<Multiplexer>, auth_token: Op
         .map_err(|_| anyhow::anyhow!("failed to reunite stream halves"))?;
 
     // Check if this domain needs tunneling
+    info!(host = %host, port, matched = domain_filter.matches(&host), "proxy: CONNECT target, checking domain filter");
     if !domain_filter.matches(&host) {
         // Direct passthrough — no secrets for this domain
-        debug!(host = %host, port, "direct passthrough (no matching secrets)");
+        info!(host = %host, port, "proxy: direct passthrough (domain filter miss)");
         let mut target = TcpStream::connect(format!("{}:{}", host, port))
             .await
             .context("connecting to target for direct passthrough")?;
@@ -205,7 +206,7 @@ async fn handle_connect(stream: TcpStream, mux: Arc<Multiplexer>, auth_token: Op
         .await
         .context("opening tunnel connection")?;
 
-    debug!(conn_id, host = %host, port, "CONNECT tunnel established");
+    info!(conn_id, host = %host, port, "proxy: routing through tunnel (domain filter hit)");
     Ok(())
 }
 

@@ -120,12 +120,12 @@ async fn handle_transparent(
         anyhow::bail!("invalid SNI hostname: {}", hostname);
     }
 
-    debug!(hostname = %hostname, "extracted SNI from transparent connection");
+    info!(hostname = %hostname, matched = domain_filter.matches(&hostname), "transparent: SNI extracted, checking domain filter");
 
     // Check if this domain needs tunneling
     if !domain_filter.matches(&hostname) {
         // Direct passthrough — no secrets for this domain
-        debug!(hostname = %hostname, "direct passthrough (no matching secrets)");
+        info!(hostname = %hostname, "transparent: direct passthrough (domain filter miss)");
         let mut target = TcpStream::connect(format!("{}:{}", hostname, 443))
             .await
             .context("connecting to target for direct passthrough")?;
@@ -140,7 +140,7 @@ async fn handle_transparent(
         .await
         .context("opening tunnel connection for transparent stream")?;
 
-    debug!(conn_id, hostname = %hostname, "transparent tunnel established");
+    info!(conn_id, hostname = %hostname, "transparent: routing through tunnel (domain filter hit)");
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 //! WinDivert-based packet interception for transparent traffic redirection.
 //!
 //! Captures all outbound TCP:443 traffic at the packet level, rewrites the
-//! destination to the local transparent listener (127.0.0.1:transparent_port),
+//! destination to the local transparent listener,
 //! and reverses the NAT on response packets. Works for ALL applications
 //! regardless of proxy settings.
 //!
@@ -17,7 +17,7 @@
 //! Requires administrator privileges and the WinDivert driver.
 
 use std::collections::HashSet;
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -49,7 +49,7 @@ mod ffi {
 
 /// NAT table entry tracking the original destination for a connection.
 struct NatEntry {
-    original_dst_ip: Ipv4Addr,
+    original_dst_ip: IpAddr,
     original_dst_port: u16,
     /// Interface index of the original outbound packet (needed for reverse-NAT re-injection).
     original_interface_index: u32,
@@ -59,7 +59,7 @@ struct NatEntry {
 }
 
 /// NAT table key: (source IP, source port) of the client connection.
-type NatKey = (Ipv4Addr, u16);
+type NatKey = (IpAddr, u16);
 
 /// Packet-level traffic interceptor using WinDivert.
 ///
@@ -114,14 +114,14 @@ impl WinDivertInterceptor {
     /// SOCKET-layer handle for PID tracking. Spawns dedicated OS threads for
     /// each.
     ///
-    /// `tunnel_server_ip` is excluded from interception to prevent capturing the
+    /// `tunnel_server_ips` is excluded from interception to prevent capturing the
     /// agent's own tunnel traffic (important when the tunnel uses port 443).
     ///
     /// `excluded_pids` lists process IDs whose outbound TCP:443 connections
     /// should pass through without NAT (e.g., the proxy server).
     pub fn start(
         transparent_port: u16,
-        tunnel_server_ip: Option<Ipv4Addr>,
+        tunnel_server_ips: Vec<IpAddr>,
         excluded_pids: Vec<u32>,
     ) -> Result<Self> {
         info!("WinDivert interceptor starting");
@@ -171,14 +171,28 @@ impl WinDivertInterceptor {
             .context("spawning WinDivert socket thread")?;
 
         // --- NETWORK layer: packet NAT ---
-        // Build outbound filter: capture all outbound TCP:443 IPv4 traffic
-        let outbound_filter = match tunnel_server_ip {
-            Some(ip) => format!(
-                "outbound and tcp.DstPort == 443 and ip and ip.DstAddr != {}",
-                ip
-            ),
-            None => "outbound and tcp.DstPort == 443 and ip".to_string(),
+        // Build outbound filter: capture all outbound TCP:443 IPv4+IPv6 traffic
+        let mut ip_clauses = Vec::new();
+        let v4_exclusion = tunnel_server_ips.iter().find_map(|ip| match ip {
+            IpAddr::V4(v4) => Some(*v4),
+            _ => None,
+        });
+        let v6_exclusion = tunnel_server_ips.iter().find_map(|ip| match ip {
+            IpAddr::V6(v6) => Some(*v6),
+            _ => None,
+        });
+        match v4_exclusion {
+            Some(v4) => ip_clauses.push(format!("(ip and ip.DstAddr != {})", v4)),
+            None => ip_clauses.push("ip".to_string()),
         };
+        match v6_exclusion {
+            Some(v6) => ip_clauses.push(format!("(ipv6 and ipv6.DstAddr != {})", v6)),
+            None => ip_clauses.push("ipv6".to_string()),
+        };
+        let outbound_filter = format!(
+            "outbound and tcp.DstPort == 443 and ({})",
+            ip_clauses.join(" or ")
+        );
 
         // Build response filter: capture responses from our transparent listener.
         // With hairpin NAT, the listener's source IP is the machine's own NIC
@@ -186,7 +200,7 @@ impl WinDivertInterceptor {
         // is "outbound" in WinDivert, so no direction constraint either.
         // Packets without a NAT table entry are passed through unchanged.
         let inbound_filter = format!(
-            "ip and tcp.SrcPort == {}",
+            "(ip or ipv6) and tcp.SrcPort == {}",
             transparent_port
         );
 
@@ -479,6 +493,36 @@ fn run_outbound(
     debug!("outbound capture thread exiting");
 }
 
+/// Determine the byte offset where the TCP header starts.
+/// Returns `None` for non-IP packets or packets too short to parse.
+/// IPv4: variable header length (IHL field). IPv6: fixed 40 bytes.
+fn tcp_header_offset(data: &[u8]) -> Option<usize> {
+    if data.is_empty() {
+        return None;
+    }
+    match data[0] >> 4 {
+        4 => {
+            let ihl = ((data[0] & 0x0F) as usize) * 4;
+            if ihl >= 20 && data.len() >= ihl + 4 {
+                Some(ihl)
+            } else {
+                None
+            }
+        }
+        6 => {
+            // IPv6 fixed header is always 40 bytes. Extension headers between
+            // IPv6 and TCP are extremely rare for outbound TCP on Windows, and
+            // WinDivert's filter engine already matched tcp.DstPort == 443.
+            if data.len() >= 44 {
+                Some(40)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Check if a packet's source port belongs to an excluded PID.
 fn should_exclude(
     data: &[u8],
@@ -488,19 +532,14 @@ fn should_exclude(
     if excluded_pids.is_empty() {
         return false;
     }
-
-    // Parse src_port: need at least IP header + 2 bytes of TCP
-    if data.len() < 22 {
+    let tcp_off = match tcp_header_offset(data) {
+        Some(off) => off,
+        None => return false,
+    };
+    if data.len() < tcp_off + 2 {
         return false;
     }
-    if (data[0] >> 4) != 4 {
-        return false;
-    }
-    let ihl = ((data[0] & 0x0F) as usize) * 4;
-    if ihl < 20 || data.len() < ihl + 2 {
-        return false;
-    }
-    let src_port = u16::from_be_bytes([data[ihl], data[ihl + 1]]);
+    let src_port = u16::from_be_bytes([data[tcp_off], data[tcp_off + 1]]);
 
     if let Some(pid_entry) = socket_pid_map.get(&src_port) {
         if excluded_pids.contains(pid_entry.value()) {
@@ -508,7 +547,6 @@ fn should_exclude(
             return true;
         }
     }
-
     false
 }
 
@@ -555,7 +593,7 @@ fn run_inbound(
     debug!("inbound capture thread exiting");
 }
 
-/// Rewrite an outbound packet's destination using hairpin NAT.
+/// Rewrite an outbound IPv4 or IPv6 packet's destination using hairpin NAT.
 ///
 /// Sets dst_ip = src_ip (the machine's own NIC address) and dst_port =
 /// transparent_port. This "hairpin" keeps the packet on the same interface,
@@ -571,54 +609,69 @@ fn rewrite_outbound(
     interface_index: u32,
     subinterface_index: u32,
 ) -> Result<(), &'static str> {
-    // Minimum: 20-byte IP header + 4 bytes for TCP ports
-    if data.len() < 24 {
-        return Err("packet too short");
+    let tcp_off = tcp_header_offset(data).ok_or("packet too short or not IP")?;
+
+    match data[0] >> 4 {
+        4 => {
+            // IPv4: src IP at [12..16], dst IP at [16..20]
+            let src_ip = IpAddr::V4(Ipv4Addr::new(data[12], data[13], data[14], data[15]));
+            let dst_ip = IpAddr::V4(Ipv4Addr::new(data[16], data[17], data[18], data[19]));
+            let src_port = u16::from_be_bytes([data[tcp_off], data[tcp_off + 1]]);
+            let dst_port = u16::from_be_bytes([data[tcp_off + 2], data[tcp_off + 3]]);
+
+            nat_table.insert(
+                (src_ip, src_port),
+                NatEntry {
+                    original_dst_ip: dst_ip,
+                    original_dst_port: dst_port,
+                    original_interface_index: interface_index,
+                    original_subinterface_index: subinterface_index,
+                    last_seen: Instant::now(),
+                },
+            );
+
+            // Hairpin NAT: dst_ip = src_ip (no overlap: [12..16] vs [16..20])
+            data[16] = data[12];
+            data[17] = data[13];
+            data[18] = data[14];
+            data[19] = data[15];
+
+            // Rewrite dst port
+            data[tcp_off + 2] = redirect_port[0];
+            data[tcp_off + 3] = redirect_port[1];
+            Ok(())
+        }
+        6 => {
+            // IPv6: src IP at [8..24], dst IP at [24..40]
+            let src_ip = IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&data[8..24]).unwrap()));
+            let dst_ip = IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&data[24..40]).unwrap()));
+            let src_port = u16::from_be_bytes([data[tcp_off], data[tcp_off + 1]]);
+            let dst_port = u16::from_be_bytes([data[tcp_off + 2], data[tcp_off + 3]]);
+
+            nat_table.insert(
+                (src_ip, src_port),
+                NatEntry {
+                    original_dst_ip: dst_ip,
+                    original_dst_port: dst_port,
+                    original_interface_index: interface_index,
+                    original_subinterface_index: subinterface_index,
+                    last_seen: Instant::now(),
+                },
+            );
+
+            // Hairpin NAT: copy src [8..24] to dst [24..40] (no overlap)
+            data.copy_within(8..24, 24);
+
+            // Rewrite dst port
+            data[tcp_off + 2] = redirect_port[0];
+            data[tcp_off + 3] = redirect_port[1];
+            Ok(())
+        }
+        _ => Err("not IPv4 or IPv6"),
     }
-    if (data[0] >> 4) != 4 {
-        return Err("not IPv4");
-    }
-
-    let ihl = ((data[0] & 0x0F) as usize) * 4;
-    if ihl < 20 || data.len() < ihl + 4 {
-        return Err("invalid IHL");
-    }
-
-    // Read original addresses and ports
-    // IPv4: src IP at [12..16], dst IP at [16..20]
-    // TCP: src port at [ihl..ihl+2], dst port at [ihl+2..ihl+4]
-    let src_ip = Ipv4Addr::new(data[12], data[13], data[14], data[15]);
-    let dst_ip = Ipv4Addr::new(data[16], data[17], data[18], data[19]);
-    let src_port = u16::from_be_bytes([data[ihl], data[ihl + 1]]);
-    let dst_port = u16::from_be_bytes([data[ihl + 2], data[ihl + 3]]);
-
-    // Store NAT mapping: (client_ip, client_port) → original destination + interface
-    nat_table.insert(
-        (src_ip, src_port),
-        NatEntry {
-            original_dst_ip: dst_ip,
-            original_dst_port: dst_port,
-            original_interface_index: interface_index,
-            original_subinterface_index: subinterface_index,
-            last_seen: Instant::now(),
-        },
-    );
-
-    // Hairpin NAT: rewrite destination IP to source IP (machine's own address).
-    // Must read src bytes before writing to dst (no overlap: [12..16] vs [16..20]).
-    data[16] = data[12];
-    data[17] = data[13];
-    data[18] = data[14];
-    data[19] = data[15];
-
-    // Rewrite destination port to transparent listener port
-    data[ihl + 2] = redirect_port[0];
-    data[ihl + 3] = redirect_port[1];
-
-    Ok(())
 }
 
-/// Reverse-NAT a response packet from the transparent listener.
+/// Reverse-NAT a response IPv4 or IPv6 packet from the transparent listener.
 ///
 /// Looks up the original destination by (dst_ip, dst_port) — the client's
 /// (src_ip, src_port) from the original outbound packet.
@@ -629,72 +682,102 @@ fn rewrite_inbound(
     data: &mut [u8],
     nat_table: &DashMap<NatKey, NatEntry>,
 ) -> Result<(u32, u32), &'static str> {
-    if data.len() < 24 {
-        return Err("packet too short");
-    }
-    if (data[0] >> 4) != 4 {
-        return Err("not IPv4");
-    }
+    let tcp_off = tcp_header_offset(data).ok_or("packet too short or not IP")?;
 
-    let ihl = ((data[0] & 0x0F) as usize) * 4;
-    if ihl < 20 || data.len() < ihl + 4 {
-        return Err("invalid IHL");
-    }
+    match data[0] >> 4 {
+        4 => {
+            // IPv4: client (dst) IP at [16..20]
+            let client_ip = IpAddr::V4(Ipv4Addr::new(data[16], data[17], data[18], data[19]));
+            let client_port = u16::from_be_bytes([data[tcp_off + 2], data[tcp_off + 3]]);
+            let key = (client_ip, client_port);
 
-    // For responses: dst is the original client (our NAT key)
-    let client_ip = Ipv4Addr::new(data[16], data[17], data[18], data[19]);
-    let client_port = u16::from_be_bytes([data[ihl + 2], data[ihl + 3]]);
-    let key = (client_ip, client_port);
+            if let Some(mut entry) = nat_table.get_mut(&key) {
+                match entry.original_dst_ip {
+                    IpAddr::V4(orig_v4) => {
+                        let octets = orig_v4.octets();
+                        data[12] = octets[0];
+                        data[13] = octets[1];
+                        data[14] = octets[2];
+                        data[15] = octets[3];
+                    }
+                    _ => return Err("IPv4 packet but NAT entry has IPv6 address"),
+                }
+                let orig_port = entry.original_dst_port.to_be_bytes();
+                data[tcp_off] = orig_port[0];
+                data[tcp_off + 1] = orig_port[1];
+                let iface = entry.original_interface_index;
+                let subiface = entry.original_subinterface_index;
+                entry.last_seen = Instant::now();
+                Ok((iface, subiface))
+            } else {
+                Err("NAT table miss")
+            }
+        }
+        6 => {
+            // IPv6: client (dst) IP at [24..40]
+            let client_ip = IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&data[24..40]).unwrap()));
+            let client_port = u16::from_be_bytes([data[tcp_off + 2], data[tcp_off + 3]]);
+            let key = (client_ip, client_port);
 
-    if let Some(mut entry) = nat_table.get_mut(&key) {
-        // Restore original server IP as packet source
-        let orig_ip = entry.original_dst_ip.octets();
-        data[12] = orig_ip[0];
-        data[13] = orig_ip[1];
-        data[14] = orig_ip[2];
-        data[15] = orig_ip[3];
-
-        // Restore original server port as source port
-        let orig_port = entry.original_dst_port.to_be_bytes();
-        data[ihl] = orig_port[0];
-        data[ihl + 1] = orig_port[1];
-
-        let iface = entry.original_interface_index;
-        let subiface = entry.original_subinterface_index;
-        entry.last_seen = Instant::now();
-        Ok((iface, subiface))
-    } else {
-        Err("NAT table miss")
+            if let Some(mut entry) = nat_table.get_mut(&key) {
+                match entry.original_dst_ip {
+                    IpAddr::V6(orig_v6) => {
+                        data[8..24].copy_from_slice(&orig_v6.octets());
+                    }
+                    _ => return Err("IPv6 packet but NAT entry has IPv4 address"),
+                }
+                let orig_port = entry.original_dst_port.to_be_bytes();
+                data[tcp_off] = orig_port[0];
+                data[tcp_off + 1] = orig_port[1];
+                let iface = entry.original_interface_index;
+                let subiface = entry.original_subinterface_index;
+                entry.last_seen = Instant::now();
+                Ok((iface, subiface))
+            } else {
+                Err("NAT table miss")
+            }
+        }
+        _ => Err("not IPv4 or IPv6"),
     }
 }
 
 /// Check if a packet is a TCP SYN (new connection initiation, not SYN-ACK).
 fn is_syn_packet(data: &[u8]) -> bool {
-    if data.len() < 34 || (data[0] >> 4) != 4 {
+    let tcp_off = match tcp_header_offset(data) {
+        Some(off) => off,
+        None => return false,
+    };
+    if data.len() < tcp_off + 14 {
         return false;
     }
-    let ihl = ((data[0] & 0x0F) as usize) * 4;
-    if ihl < 20 || data.len() < ihl + 14 {
-        return false;
-    }
-    let flags = data[ihl + 13];
+    let flags = data[tcp_off + 13];
     (flags & 0x02 != 0) && (flags & 0x10 == 0) // SYN=1, ACK=0
 }
 
-/// Parse src/dst IP and ports from an IPv4 packet for diagnostic logging.
-fn parse_packet_addrs(data: &[u8]) -> (Ipv4Addr, Ipv4Addr, u16, u16) {
-    if data.len() < 24 || (data[0] >> 4) != 4 {
-        return (Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, 0, 0);
+/// Parse src/dst IP and ports from an IPv4 or IPv6 packet for diagnostic logging.
+fn parse_packet_addrs(data: &[u8]) -> (IpAddr, IpAddr, u16, u16) {
+    let unspec = (IpAddr::V4(Ipv4Addr::UNSPECIFIED), IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0u16, 0u16);
+    let tcp_off = match tcp_header_offset(data) {
+        Some(off) => off,
+        None => return unspec,
+    };
+    match data[0] >> 4 {
+        4 => {
+            let src = IpAddr::V4(Ipv4Addr::new(data[12], data[13], data[14], data[15]));
+            let dst = IpAddr::V4(Ipv4Addr::new(data[16], data[17], data[18], data[19]));
+            let sp = u16::from_be_bytes([data[tcp_off], data[tcp_off + 1]]);
+            let dp = u16::from_be_bytes([data[tcp_off + 2], data[tcp_off + 3]]);
+            (src, dst, sp, dp)
+        }
+        6 => {
+            let src = IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&data[8..24]).unwrap()));
+            let dst = IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&data[24..40]).unwrap()));
+            let sp = u16::from_be_bytes([data[tcp_off], data[tcp_off + 1]]);
+            let dp = u16::from_be_bytes([data[tcp_off + 2], data[tcp_off + 3]]);
+            (src, dst, sp, dp)
+        }
+        _ => unspec,
     }
-    let ihl = ((data[0] & 0x0F) as usize) * 4;
-    if ihl < 20 || data.len() < ihl + 4 {
-        return (Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, 0, 0);
-    }
-    let src = Ipv4Addr::new(data[12], data[13], data[14], data[15]);
-    let dst = Ipv4Addr::new(data[16], data[17], data[18], data[19]);
-    let sp = u16::from_be_bytes([data[ihl], data[ihl + 1]]);
-    let dp = u16::from_be_bytes([data[ihl + 2], data[ihl + 3]]);
-    (src, dst, sp, dp)
 }
 
 /// Periodically remove stale NAT entries (connections closed/abandoned > 5 minutes ago).

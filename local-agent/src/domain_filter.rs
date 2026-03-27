@@ -1,6 +1,6 @@
 use std::sync::RwLock;
 
-use tracing::info;
+use tracing::{debug, info};
 
 /// Stores and matches domain patterns fetched from the proxy server.
 ///
@@ -21,7 +21,7 @@ impl DomainFilter {
 
     /// Replace the current domain list with a new one from the server.
     pub fn update(&self, domains: Vec<String>) {
-        info!(count = domains.len(), "domain filter updated");
+        info!(count = domains.len(), domains = ?domains, "domain filter updated");
         let mut patterns = self.patterns.write().unwrap();
         *patterns = domains;
     }
@@ -35,22 +35,27 @@ impl DomainFilter {
         let patterns = self.patterns.read().unwrap();
         let hostname_lower = hostname.to_ascii_lowercase();
 
+        debug!(hostname = %hostname, pattern_count = patterns.len(), "domain filter check");
+
         for pattern in patterns.iter() {
             let pattern_lower = pattern.to_ascii_lowercase();
 
             if let Some(suffix) = pattern_lower.strip_prefix("*.") {
                 // Wildcard: hostname must end with .suffix and be longer than suffix
                 if hostname_lower.ends_with(&format!(".{}", suffix)) {
+                    debug!(hostname = %hostname, matched_pattern = %pattern, "domain filter: match found");
                     return true;
                 }
             } else {
                 // Exact match
                 if hostname_lower == pattern_lower {
+                    debug!(hostname = %hostname, matched_pattern = %pattern, "domain filter: match found");
                     return true;
                 }
             }
         }
 
+        debug!(hostname = %hostname, "domain filter: no match in {} patterns", patterns.len());
         false
     }
 

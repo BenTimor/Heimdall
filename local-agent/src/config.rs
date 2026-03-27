@@ -162,7 +162,7 @@ fn default_transparent_port() -> u16 {
     19443
 }
 fn default_all_interfaces() -> String {
-    "0.0.0.0".to_string()
+    "::".to_string()
 }
 fn default_proxy_port() -> u16 {
     19080

@@ -111,6 +111,7 @@ impl Multiplexer {
         self.connections.insert(conn_id, Connection { local_tx });
 
         // Send NEW_CONNECTION frame with "host:port" payload.
+        info!(conn_id, host = %host, port, "multiplexer: sending NEW_CONNECTION");
         let payload = format!("{}:{}", host, port);
         let frame = Frame::new(conn_id, FrameType::NewConnection, Bytes::from(payload));
         self.tunnel_tx

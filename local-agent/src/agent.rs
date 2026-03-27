@@ -206,32 +206,34 @@ fn start_windivert_if_configured(
 ) -> Option<crate::platform::windivert::WinDivertInterceptor> {
     use crate::config::InterceptionMethod;
     use crate::platform::windivert::WinDivertInterceptor;
-    use std::net::Ipv4Addr;
+    use std::net::IpAddr;
 
     if config.transparent.method == InterceptionMethod::SystemProxy {
         info!("interception method is system_proxy, skipping WinDivert");
         return None;
     }
 
-    // Resolve tunnel server IP for WinDivert filter exclusion.
+    // Resolve tunnel server IP(s) for WinDivert filter exclusion.
     // If the host is a hostname (not an IP), try DNS resolution.
-    let tunnel_server_ip: Option<Ipv4Addr> = config
-        .server
-        .host
-        .parse::<Ipv4Addr>()
-        .ok()
-        .or_else(|| {
+    let tunnel_server_ips: Vec<IpAddr> = {
+        let mut ips = Vec::new();
+        if let Ok(ip) = config.server.host.parse::<IpAddr>() {
+            ips.push(ip);
+        } else {
             use std::net::ToSocketAddrs;
             let addr_str = format!("{}:0", config.server.host);
-            addr_str.to_socket_addrs().ok().and_then(|mut addrs| {
-                addrs.find_map(|a| match a {
-                    std::net::SocketAddr::V4(v4) => Some(*v4.ip()),
-                    _ => None,
-                })
-            })
-        });
+            if let Ok(addrs) = addr_str.to_socket_addrs() {
+                for a in addrs {
+                    ips.push(a.ip());
+                }
+                ips.sort_unstable();
+                ips.dedup();
+            }
+        }
+        ips
+    };
 
-    if tunnel_server_ip.is_none() && config.server.port == 443 {
+    if tunnel_server_ips.is_empty() && config.server.port == 443 {
         warn!(
             host = %config.server.host,
             "could not resolve tunnel server IP and tunnel port is 443 — \
@@ -258,7 +260,7 @@ fn start_windivert_if_configured(
     excluded_pids.dedup();
     info!(excluded_pids = ?excluded_pids, "WinDivert PID exclusion list");
 
-    match WinDivertInterceptor::start(config.transparent.port, tunnel_server_ip, excluded_pids) {
+    match WinDivertInterceptor::start(config.transparent.port, tunnel_server_ips, excluded_pids) {
         Ok(interceptor) => {
             info!("WinDivert interceptor started — capturing all outbound TCP:443 traffic");
             Some(interceptor)
