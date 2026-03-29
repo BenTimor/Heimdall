@@ -12,16 +12,41 @@ use crate::transparent;
 use crate::tunnel::client;
 use crate::tunnel::multiplexer::Multiplexer;
 
-/// Run the agent: connect tunnel, start local proxy, health endpoint, event loop.
+/// Run the agent: connect tunnel, start services, reconnect on tunnel death.
+///
+/// The outer loop handles reconnection: when the tunnel dies (read/write/heartbeat
+/// loop exits), the agent stops WinDivert (to unblock traffic), tears down the
+/// current session's services, reconnects, and restarts everything.
+///
+/// The domain filter is shared across reconnections so that cached domain lists
+/// survive brief disconnects. The ctrl-c shutdown channel spans the entire lifetime.
 pub async fn run(config: AgentConfig) -> Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // Connect to tunnel with reconnect.
-    // Box::pin the TLS handshake future — it creates a large async state machine
-    // (TlsConnector::connect + Framed codec) that would otherwise inflate this
-    // function's state machine by several MB.
+    // Domain filter is shared across reconnections — cached domains survive
+    // brief tunnel outages.
+    let domain_filter = Arc::new(DomainFilter::new());
+    let max_connections = config.tunnel.as_ref().map_or(1000, |t| t.max_connections);
+
+    // On Linux, re-apply iptables interception rules if they were lost after reboot.
+    // This runs once at startup, not per-session.
+    #[cfg(target_os = "linux")]
+    if config.transparent.enabled {
+        reapply_iptables_if_needed(&config);
+    }
+
+    // Spawn ctrl-c handler that signals the top-level shutdown.
+    // shutdown_tx is moved into the spawned task — it is the sole owner.
+    tokio::spawn(async move {
+        if let Ok(()) = tokio::signal::ctrl_c().await {
+            info!("ctrl-c received, shutting down...");
+            let _ = shutdown_tx.send(true);
+        }
+    });
+
+    // Initial connection
     info!("connecting to tunnel server...");
-    let framed = Box::pin(client::connect_with_reconnect(
+    let initial_framed = Box::pin(client::connect_with_reconnect(
         &config.server,
         &config.auth,
         &config.reconnect,
@@ -31,165 +56,230 @@ pub async fn run(config: AgentConfig) -> Result<()> {
     .context("initial tunnel connection")?;
 
     let started_at = Instant::now();
+    let mut pending_framed: Option<_> = Some(initial_framed);
 
-    // Start multiplexer with domain filter
-    let max_connections = config.tunnel.as_ref().map_or(1000, |t| t.max_connections);
-    let domain_filter = Arc::new(DomainFilter::new());
-    let multiplexer = Multiplexer::start(framed, shutdown_rx.clone(), max_connections, domain_filter.clone());
+    // === Reconnect loop ===
+    loop {
+        // Take the framed tunnel for this session (always Some at loop entry).
+        let framed = pending_framed.take().expect("pending_framed must be Some at loop start");
 
-    // Request initial domain list and start polling
-    if let Err(e) = multiplexer.request_domain_list().await {
-        warn!(error = %e, "failed to send initial domain list request");
-    }
+        // Per-session shutdown channel: signals services to stop when the tunnel
+        // dies or when the top-level shutdown fires.
+        let (session_shutdown_tx, session_shutdown_rx) = tokio::sync::watch::channel(false);
 
-    let poll_mux = multiplexer.clone();
-    let mut poll_shutdown = shutdown_rx.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-        interval.tick().await; // skip immediate first tick (already sent above)
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    if let Err(e) = poll_mux.request_domain_list().await {
-                        warn!(error = %e, "domain list polling failed, tunnel may be down");
+        // Forward top-level shutdown to session shutdown.
+        let mut top_shutdown_for_forward = shutdown_rx.clone();
+        let session_tx_for_forward = session_shutdown_tx.clone();
+        tokio::spawn(async move {
+            let _ = top_shutdown_for_forward.changed().await;
+            let _ = session_tx_for_forward.send(true);
+        });
+
+        // Start multiplexer
+        let multiplexer = Multiplexer::start(
+            framed,
+            session_shutdown_rx.clone(),
+            max_connections,
+            domain_filter.clone(),
+        );
+        let mut tunnel_alive = multiplexer.subscribe_tunnel_alive();
+
+        // Request initial domain list and start polling
+        if let Err(e) = multiplexer.request_domain_list().await {
+            warn!(error = %e, "failed to send initial domain list request");
+        }
+
+        let poll_mux = multiplexer.clone();
+        let mut poll_shutdown = session_shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+            interval.tick().await; // skip immediate first tick (already sent above)
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if let Err(e) = poll_mux.request_domain_list().await {
+                            warn!(error = %e, "domain list polling failed, tunnel may be down");
+                            break;
+                        }
+                    }
+                    _ = poll_shutdown.changed() => {
                         break;
                     }
                 }
-                _ = poll_shutdown.changed() => {
-                    break;
+            }
+        });
+
+        // Start health endpoint
+        let health_state = Arc::new(HealthState {
+            multiplexer: multiplexer.clone(),
+            started_at,
+        });
+        let health_config = config.health.clone();
+        let health_shutdown = session_shutdown_rx.clone();
+        let health_handle = tokio::spawn(async move {
+            if let Err(e) = health::run_health_server(&health_config, health_state, health_shutdown).await {
+                error!(error = %e, "health server error");
+            }
+        });
+
+        // Start local CONNECT proxy
+        let proxy_config = config.local_proxy.clone();
+        let proxy_mux = multiplexer.clone();
+        let proxy_shutdown = session_shutdown_rx.clone();
+        let proxy_domain_filter = domain_filter.clone();
+        let proxy_handle = tokio::spawn(async move {
+            if let Err(e) = local_proxy::run_local_proxy(&proxy_config, proxy_mux, proxy_shutdown, proxy_domain_filter).await {
+                error!(error = %e, "local proxy error");
+            }
+        });
+
+        // Optionally start transparent listener
+        let transparent_handle = if config.transparent.enabled {
+            let transparent_config = config.transparent.clone();
+            let transparent_mux = multiplexer.clone();
+            let transparent_shutdown = session_shutdown_rx.clone();
+            let transparent_domain_filter = domain_filter.clone();
+            Some(tokio::spawn(async move {
+                if let Err(e) =
+                    transparent::run_transparent_listener(&transparent_config, transparent_mux, transparent_shutdown, transparent_domain_filter)
+                        .await
+                {
+                    error!(error = %e, "transparent listener error");
                 }
-            }
-        }
-    });
+            }))
+        } else {
+            None
+        };
 
-    // Start health endpoint
-    let health_state = Arc::new(HealthState {
-        multiplexer: multiplexer.clone(),
-        started_at,
-    });
+        // On Windows, optionally start WinDivert packet-level interception.
+        #[cfg(target_os = "windows")]
+        let windivert_interceptor = if config.transparent.enabled {
+            let wd_config = config.clone();
+            std::thread::Builder::new()
+                .name("windivert-init".into())
+                .stack_size(64 * 1024 * 1024)
+                .spawn(move || start_windivert_if_configured(&wd_config))
+                .expect("failed to spawn WinDivert init thread")
+                .join()
+                .expect("WinDivert init thread panicked")
+        } else {
+            None
+        };
 
-    let health_config = config.health.clone();
-    let health_shutdown = shutdown_rx.clone();
-    let health_handle = tokio::spawn(async move {
-        if let Err(e) = health::run_health_server(&health_config, health_state, health_shutdown).await {
-            error!(error = %e, "health server error");
-        }
-    });
+        info!(
+            proxy_addr = %format!("{}:{}", config.local_proxy.host, config.local_proxy.port),
+            health_addr = %format!("{}:{}", config.health.host, config.health.port),
+            transparent = config.transparent.enabled,
+            "agent running"
+        );
 
-    // Start local CONNECT proxy
-    let proxy_config = config.local_proxy.clone();
-    let proxy_mux = multiplexer.clone();
-    let proxy_shutdown = shutdown_rx.clone();
-    let proxy_domain_filter = domain_filter.clone();
-    let proxy_handle = tokio::spawn(async move {
-        if let Err(e) = local_proxy::run_local_proxy(&proxy_config, proxy_mux, proxy_shutdown, proxy_domain_filter).await {
-            error!(error = %e, "local proxy error");
-        }
-    });
-
-    // Optionally start transparent listener (for OS-level interception)
-    let transparent_handle = if config.transparent.enabled {
-        let transparent_config = config.transparent.clone();
-        let transparent_mux = multiplexer.clone();
-        let transparent_shutdown = shutdown_rx.clone();
-        let transparent_domain_filter = domain_filter.clone();
-        Some(tokio::spawn(async move {
-            if let Err(e) =
-                transparent::run_transparent_listener(&transparent_config, transparent_mux, transparent_shutdown, transparent_domain_filter)
-                    .await
-            {
-                error!(error = %e, "transparent listener error");
-            }
-        }))
-    } else {
-        None
-    };
-
-    // On Linux, re-apply iptables interception rules if they were lost after reboot.
-    // iptables rules are not persistent by default, so if the agent was installed
-    // with interception enabled, we need to re-apply them on startup.
-    #[cfg(target_os = "linux")]
-    if config.transparent.enabled {
-        match crate::state::InstallState::load() {
-            Ok(Some(state)) if state.interception_enabled => {
-                let platform = crate::platform::platform();
-                match platform.is_interception_active() {
-                    Ok(false) => {
-                        if let Err(e) = platform.enable_interception(config.transparent.port) {
-                            warn!(error = %e, "failed to re-apply interception rules");
-                        } else {
-                            info!("Re-applied interception rules (lost after reboot)");
+        // === Wait for tunnel death or top-level shutdown ===
+        let mut top_shutdown_rx = shutdown_rx.clone();
+        let should_exit = loop {
+            tokio::select! {
+                result = tunnel_alive.changed() => {
+                    match result {
+                        Ok(()) if !*tunnel_alive.borrow() => {
+                            warn!("tunnel connection lost, initiating reconnection");
+                            break false; // reconnect
+                        }
+                        Ok(()) => {
+                            // Spurious wake (value still true) — keep waiting
+                        }
+                        Err(_) => {
+                            // watch sender dropped — all tunnel tasks exited
+                            warn!("tunnel connection lost (sender dropped), initiating reconnection");
+                            break false;
                         }
                     }
-                    Ok(true) => {
-                        // Rules are already active, nothing to do.
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "failed to check interception status");
-                    }
+                }
+                _ = top_shutdown_rx.changed() => {
+                    break true; // clean exit
                 }
             }
-            Ok(_) => {
-                // No state or interception not enabled — skip.
+        };
+
+        // --- Tear down current session ---
+
+        // Stop WinDivert FIRST — must not block traffic while tunnel is dead
+        #[cfg(target_os = "windows")]
+        if let Some(mut interceptor) = windivert_interceptor {
+            info!("stopping WinDivert interceptor");
+            interceptor.stop();
+        }
+
+        // Gracefully drain active connections
+        multiplexer.shutdown().await;
+
+        // Signal session services to stop
+        let _ = session_shutdown_tx.send(true);
+
+        // Wait for session services to finish
+        let _ = health_handle.await;
+        let _ = proxy_handle.await;
+        if let Some(handle) = transparent_handle {
+            let _ = handle.await;
+        }
+
+        if should_exit {
+            info!("agent stopped");
+            return Ok(());
+        }
+
+        // --- Reconnect ---
+        info!("reconnecting to tunnel server...");
+        match Box::pin(client::connect_with_reconnect(
+            &config.server,
+            &config.auth,
+            &config.reconnect,
+            shutdown_rx.clone(),
+        ))
+        .await
+        {
+            Ok(new_framed) => {
+                info!("tunnel reconnected successfully");
+                pending_framed = Some(new_framed);
+                // Loop back to start a new session
             }
             Err(e) => {
-                warn!(error = %e, "failed to load install state for iptables check");
+                // connect_with_reconnect only fails on shutdown signal
+                info!(error = %e, "reconnection aborted (shutdown requested)");
+                return Ok(());
             }
         }
     }
+}
 
-    // On Windows, optionally start WinDivert packet-level interception.
-    // Run on a dedicated thread: the main thread's stack is shared with the
-    // async runtime polling chain, and WinDivert's kernel handle creation +
-    // filter compilation adds enough stack pressure to cause overflow.
-    #[cfg(target_os = "windows")]
-    let windivert_interceptor = if config.transparent.enabled {
-        let wd_config = config.clone();
-        std::thread::Builder::new()
-            .name("windivert-init".into())
-            .stack_size(64 * 1024 * 1024) // 64 MB virtual reservation — only touched pages commit physical memory
-            .spawn(move || start_windivert_if_configured(&wd_config))
-            .expect("failed to spawn WinDivert init thread")
-            .join()
-            .expect("WinDivert init thread panicked")
-    } else {
-        None
-    };
-
-    info!(
-        proxy_addr = %format!("{}:{}", config.local_proxy.host, config.local_proxy.port),
-        health_addr = %format!("{}:{}", config.health.host, config.health.port),
-        transparent = config.transparent.enabled,
-        "agent running"
-    );
-
-    // Wait for ctrl-c
-    tokio::signal::ctrl_c()
-        .await
-        .context("waiting for ctrl-c")?;
-
-    info!("shutting down...");
-
-    // Gracefully drain active connections before signaling shutdown
-    multiplexer.shutdown().await;
-
-    // Stop WinDivert before signaling async tasks (it uses OS threads, not tokio)
-    #[cfg(target_os = "windows")]
-    if let Some(mut interceptor) = windivert_interceptor {
-        interceptor.stop();
+/// Re-apply iptables interception rules if they were lost after reboot.
+/// iptables rules are not persistent by default.
+#[cfg(target_os = "linux")]
+fn reapply_iptables_if_needed(config: &AgentConfig) {
+    match crate::state::InstallState::load() {
+        Ok(Some(state)) if state.interception_enabled => {
+            let platform = crate::platform::platform();
+            match platform.is_interception_active() {
+                Ok(false) => {
+                    if let Err(e) = platform.enable_interception(config.transparent.port) {
+                        warn!(error = %e, "failed to re-apply interception rules");
+                    } else {
+                        info!("Re-applied interception rules (lost after reboot)");
+                    }
+                }
+                Ok(true) => {
+                    // Rules are already active, nothing to do.
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to check interception status");
+                }
+            }
+        }
+        Ok(_) => {
+            // No state or interception not enabled — skip.
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to load install state for iptables check");
+        }
     }
-
-    let _ = shutdown_tx.send(true);
-
-    // Wait for async tasks to finish
-    if let Some(handle) = transparent_handle {
-        let _ = tokio::join!(proxy_handle, health_handle, handle);
-    } else {
-        let _ = tokio::join!(proxy_handle, health_handle);
-    }
-
-    info!("agent stopped");
-    Ok(())
 }
 
 /// Try to start WinDivert packet interception based on config.

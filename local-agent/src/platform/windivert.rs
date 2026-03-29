@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use dashmap::DashMap;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 use windivert::prelude::*;
 use windivert::layer;
 
@@ -566,6 +566,7 @@ fn run_inbound(
                 let mut packet = packet.into_owned();
                 let data = packet.data.to_mut();
 
+                let is_syn_ack = is_syn_ack_packet(data);
                 match rewrite_inbound(data, &nat_table) {
                     Ok((orig_iface, orig_subiface)) => {
                         packet.address.set_outbound(false);
@@ -573,7 +574,18 @@ fn run_inbound(
                         packet.address.set_interface_index(orig_iface);
                         packet.address.set_subinterface_index(orig_subiface);
                     }
-                    Err(_) => {} // Not our connection, pass through unchanged.
+                    Err(_) => {
+                        // Not our connection, pass through unchanged.
+                        if is_syn_ack {
+                            let (src, dst, sp, dp) = parse_packet_addrs(data);
+                            warn!(
+                                src = %format!("{}:{}", src, sp),
+                                dst = %format!("{}:{}", dst, dp),
+                                nat_entries = nat_table.len(),
+                                "inbound SYN-ACK NAT miss — response not reverse-NATted"
+                            );
+                        }
+                    }
                 }
 
                 let _ = packet.recalculate_checksums(Default::default());
@@ -752,6 +764,19 @@ fn is_syn_packet(data: &[u8]) -> bool {
     }
     let flags = data[tcp_off + 13];
     (flags & 0x02 != 0) && (flags & 0x10 == 0) // SYN=1, ACK=0
+}
+
+/// Check if a packet is a TCP SYN-ACK.
+fn is_syn_ack_packet(data: &[u8]) -> bool {
+    let tcp_off = match tcp_header_offset(data) {
+        Some(off) => off,
+        None => return false,
+    };
+    if data.len() < tcp_off + 14 {
+        return false;
+    }
+    let flags = data[tcp_off + 13];
+    (flags & 0x02 != 0) && (flags & 0x10 != 0) // SYN=1, ACK=1
 }
 
 /// Parse src/dst IP and ports from an IPv4 or IPv6 packet for diagnostic logging.

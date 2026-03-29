@@ -37,6 +37,7 @@ pub struct Multiplexer {
     last_heartbeat: Arc<tokio::sync::Mutex<Instant>>,
     max_connections: u32,
     domain_filter: Arc<DomainFilter>,
+    tunnel_alive_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Status snapshot for health reporting.
@@ -53,6 +54,7 @@ impl Multiplexer {
         let (write_half, read_half) = framed.split();
 
         let (tunnel_tx, tunnel_rx) = mpsc::channel::<Frame>(256);
+        let (tunnel_alive_tx, tunnel_alive_rx) = tokio::sync::watch::channel(true);
 
         let connections: Arc<DashMap<u32, Connection>> = Arc::new(DashMap::new());
         let last_heartbeat = Arc::new(tokio::sync::Mutex::new(Instant::now()));
@@ -64,26 +66,41 @@ impl Multiplexer {
             last_heartbeat: last_heartbeat.clone(),
             max_connections,
             domain_filter: domain_filter.clone(),
+            tunnel_alive_rx,
         });
 
         // Spawn tunnel writer task: drains tunnel_rx and writes to the tunnel.
-        tokio::spawn(Self::tunnel_write_loop(write_half, tunnel_rx));
+        let write_alive_tx = tunnel_alive_tx.clone();
+        tokio::spawn(async move {
+            Self::tunnel_write_loop(write_half, tunnel_rx).await;
+            let _ = write_alive_tx.send(false);
+        });
 
         // Spawn tunnel reader task: reads frames and dispatches them.
-        tokio::spawn(Self::tunnel_read_loop(
-            read_half,
-            connections.clone(),
-            tunnel_tx.clone(),
-            last_heartbeat.clone(),
-            domain_filter,
-        ));
+        let read_alive_tx = tunnel_alive_tx.clone();
+        let read_tunnel_tx = tunnel_tx.clone();
+        let read_last_hb = last_heartbeat.clone();
+        tokio::spawn(async move {
+            Self::tunnel_read_loop(
+                read_half,
+                connections.clone(),
+                read_tunnel_tx,
+                read_last_hb,
+                domain_filter,
+            ).await;
+            let _ = read_alive_tx.send(false);
+        });
 
         // Spawn heartbeat sender.
-        tokio::spawn(Self::heartbeat_loop(
-            tunnel_tx.clone(),
-            last_heartbeat.clone(),
-            shutdown,
-        ));
+        let heartbeat_alive_tx = tunnel_alive_tx;
+        tokio::spawn(async move {
+            Self::heartbeat_loop(
+                tunnel_tx,
+                last_heartbeat,
+                shutdown,
+            ).await;
+            let _ = heartbeat_alive_tx.send(false);
+        });
 
         mux
     }
@@ -186,6 +203,12 @@ impl Multiplexer {
         });
 
         Ok(conn_id)
+    }
+
+    /// Returns a watch receiver that becomes `false` when the tunnel dies
+    /// (read loop, write loop, or heartbeat loop exits).
+    pub fn subscribe_tunnel_alive(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.tunnel_alive_rx.clone()
     }
 
     pub async fn status_async(&self) -> MultiplexerStatus {

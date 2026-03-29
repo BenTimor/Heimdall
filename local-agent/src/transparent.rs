@@ -17,7 +17,10 @@ use crate::tunnel::multiplexer::Multiplexer;
 const MAX_CONCURRENT_CONNECTIONS: usize = 1024;
 
 /// Maximum number of concurrent connections from a single IP.
-const MAX_CONNECTIONS_PER_IP: usize = 100;
+/// In transparent interception mode (WinDivert/iptables), hairpin NAT causes ALL
+/// connections to arrive from the machine's own NIC address, so this limit
+/// effectively equals the global limit.
+const MAX_CONNECTIONS_PER_IP: usize = MAX_CONCURRENT_CONNECTIONS;
 
 /// Run the transparent TCP listener.
 ///
@@ -74,7 +77,7 @@ pub async fn run_transparent_listener(
 
         match accept_result {
             Ok((stream, peer)) => {
-                debug!(peer = %peer, "accepted transparent connection");
+                info!(peer = %peer, "transparent: accepted connection");
                 let ip = peer.ip();
                 {
                     let mut count = per_ip_counts.entry(ip).or_insert(0);
@@ -100,7 +103,7 @@ pub async fn run_transparent_listener(
                 }
                 tokio::spawn(async move {
                     if let Err(e) = handle_transparent(stream, mux, &df).await {
-                        debug!(peer = %peer, error = %e, "transparent connection failed");
+                        info!(peer = %peer, error = %e, "transparent: connection failed");
                     }
                     if let Some(mut count) = per_ip.get_mut(&ip) {
                         *count = count.saturating_sub(1);
