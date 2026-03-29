@@ -77,7 +77,7 @@ pub async fn run_transparent_listener(
 
         match accept_result {
             Ok((stream, peer)) => {
-                info!(peer = %peer, "transparent: accepted connection");
+                debug!(peer = %peer, "transparent: accepted connection");
                 let ip = peer.ip();
                 {
                     let mut count = per_ip_counts.entry(ip).or_insert(0);
@@ -103,7 +103,7 @@ pub async fn run_transparent_listener(
                 }
                 tokio::spawn(async move {
                     if let Err(e) = handle_transparent(stream, mux, &df).await {
-                        info!(peer = %peer, error = %e, "transparent: connection failed");
+                        debug!(peer = %peer, error = %e, "transparent: connection failed");
                     }
                     if let Some(mut count) = per_ip.get_mut(&ip) {
                         *count = count.saturating_sub(1);
@@ -146,12 +146,12 @@ async fn handle_transparent(
         anyhow::bail!("invalid SNI hostname: {}", hostname);
     }
 
-    info!(hostname = %hostname, matched = domain_filter.matches(&hostname), "transparent: SNI extracted, checking domain filter");
+    debug!(hostname = %hostname, matched = domain_filter.matches(&hostname), "transparent: SNI extracted, checking domain filter");
 
     // Check if this domain needs tunneling
     if !domain_filter.matches(&hostname) {
         // Direct passthrough — no secrets for this domain
-        info!(hostname = %hostname, "transparent: direct passthrough (domain filter miss)");
+        debug!(hostname = %hostname, "transparent: direct passthrough (domain filter miss)");
         let mut target = TcpStream::connect(format!("{}:{}", hostname, 443))
             .await
             .context("connecting to target for direct passthrough")?;
@@ -166,7 +166,7 @@ async fn handle_transparent(
         .await
         .context("opening tunnel connection for transparent stream")?;
 
-    info!(conn_id, hostname = %hostname, "transparent: routing through tunnel (domain filter hit)");
+    debug!(conn_id, hostname = %hostname, "transparent: routing through tunnel (domain filter hit)");
     Ok(())
 }
 

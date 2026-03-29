@@ -1,6 +1,6 @@
 use std::sync::RwLock;
 
-use tracing::{debug, info};
+use tracing::debug;
 
 /// Stores and matches domain patterns fetched from the proxy server.
 ///
@@ -21,7 +21,7 @@ impl DomainFilter {
 
     /// Replace the current domain list with a new one from the server.
     pub fn update(&self, domains: Vec<String>) {
-        info!(count = domains.len(), domains = ?domains, "domain filter updated");
+        debug!(count = domains.len(), domains = ?domains, "domain filter updated");
         let mut patterns = self.patterns.write().unwrap();
         *patterns = domains;
     }

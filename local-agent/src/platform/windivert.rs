@@ -465,7 +465,7 @@ fn run_outbound(
                 let orig_subiface = packet.address.subinterface_index();
 
                 if is_syn {
-                    info!(
+                    debug!(
                         src = %format!("{}:{}", pkt_src_ip, pkt_src_port),
                         dst = %format!("{}:{}", pkt_dst_ip, pkt_dst_port),
                         "intercepting new TCP:443 connection"

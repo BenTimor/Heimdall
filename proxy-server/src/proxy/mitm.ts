@@ -103,7 +103,7 @@ export async function handleMitm(
         injectedSecrets: injectedNames,
         action: injectedNames.length > 0 ? "injected" : "passthrough",
       };
-      logger.info(
+      logger.debug(
         { target: `${targetHost}:${targetPort}`, method: parsed.method, injectedSecrets: injectedNames, machineId },
         "MITM request processed",
       );

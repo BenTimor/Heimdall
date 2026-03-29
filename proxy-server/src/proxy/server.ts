@@ -214,7 +214,7 @@ export class ProxyServer {
 
     const machineId = authResult.machineId ?? "unknown";
 
-    logger.info(
+    logger.debug(
       { target: `${targetHost}:${targetPort}`, machineId },
       "CONNECT request",
     );
@@ -311,7 +311,7 @@ export class ProxyServer {
     const hasSecretConfig = this.hasSecretsForDomain(targetHost);
 
     if (isBypassed || !hasSecretConfig) {
-      logger.info({ target: `${targetHost}:${targetPort}` }, "Tunnel passthrough mode");
+      logger.debug({ target: `${targetHost}:${targetPort}` }, "Tunnel passthrough mode");
       this.deps.auditLogger.logRequest({
         timestamp: new Date().toISOString(),
         machineId,
@@ -322,7 +322,7 @@ export class ProxyServer {
       });
       handlePassthrough(socket as import("node:net").Socket, targetHost, targetPort, logger, { tunnelMode: true });
     } else {
-      logger.info({ target: `${targetHost}:${targetPort}` }, "Tunnel MITM mode");
+      logger.debug({ target: `${targetHost}:${targetPort}` }, "Tunnel MITM mode");
       const mitmDeps: MitmDeps = {
         certManager: this.deps.certManager,
         resolver: this.deps.resolver,

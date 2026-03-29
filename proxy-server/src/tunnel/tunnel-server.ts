@@ -291,7 +291,7 @@ export class TunnelServer {
     const vs = new VirtualSocket(frame.connId, session.socket);
     session.activeConnections.set(frame.connId, vs);
 
-    logger.info(
+    logger.debug(
       { connId: frame.connId, target: `${targetHost}:${targetPort}`, machineId: session.machineId },
       "New tunnel connection",
     );

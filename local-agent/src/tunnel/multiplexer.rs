@@ -128,7 +128,7 @@ impl Multiplexer {
         self.connections.insert(conn_id, Connection { local_tx });
 
         // Send NEW_CONNECTION frame with "host:port" payload.
-        info!(conn_id, host = %host, port, "multiplexer: sending NEW_CONNECTION");
+        debug!(conn_id, host = %host, port, "multiplexer: sending NEW_CONNECTION");
         let payload = format!("{}:{}", host, port);
         let frame = Frame::new(conn_id, FrameType::NewConnection, Bytes::from(payload));
         self.tunnel_tx
@@ -314,7 +314,7 @@ impl Multiplexer {
                         FrameType::DomainListResponse => {
                             match serde_json::from_slice::<Vec<String>>(&frame.payload) {
                                 Ok(domains) => {
-                                    info!(count = domains.len(), "received domain list from server");
+                                    debug!(count = domains.len(), "received domain list from server");
                                     domain_filter.update(domains);
                                 }
                                 Err(e) => {
