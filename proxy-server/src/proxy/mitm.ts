@@ -64,7 +64,7 @@ export async function handleMitm(
   } as any);
 
   tlsServer.on("error", (err) => {
-    logger.debug({ err, target: `${targetHost}:${targetPort}` }, "TLS server socket error");
+    logger.warn({ err, target: `${targetHost}:${targetPort}` }, "TLS server socket error");
     if (!clientSocket.destroyed) clientSocket.destroy();
   });
 
@@ -122,7 +122,7 @@ export async function handleMitm(
       );
     }
   } catch (err) {
-    logger.debug({ err, target: `${targetHost}:${targetPort}` }, "MITM session error");
+    logger.warn({ err, target: `${targetHost}:${targetPort}` }, "MITM session error");
   } finally {
     // Use end() instead of destroy() so that any queued response data
     // (from forwardToTarget's clientTls.write) is flushed before the

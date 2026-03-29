@@ -21,8 +21,12 @@ export class VirtualSocket extends Duplex {
 
   /** Called when proxy code writes data into this socket (going to the agent). */
   _write(chunk: Buffer, _encoding: string, callback: (error?: Error | null) => void): void {
-    if (this._ended || this.agentSocket.destroyed) {
-      callback();
+    if (this._ended) {
+      callback(new Error("VirtualSocket has ended"));
+      return;
+    }
+    if (this.agentSocket.destroyed) {
+      callback(new Error("Tunnel agent socket destroyed"));
       return;
     }
     const frame = encodeFrame(this.connId, FrameType.DATA, chunk);
