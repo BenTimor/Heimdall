@@ -44,6 +44,9 @@ pub async fn run_local_proxy(
                 match result {
                     Ok((stream, peer)) => {
                         debug!(peer = %peer, "accepted local connection");
+                        if let Err(e) = stream.set_nodelay(true) {
+                            warn!(peer = %peer, error = %e, "failed to set TCP_NODELAY on local proxy connection");
+                        }
                         let ip = peer.ip();
                         {
                             let mut count = per_ip_counts.entry(ip).or_insert(0);

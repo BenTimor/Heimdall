@@ -12,6 +12,7 @@ import { matchesAnyDomain } from "../utils/domain-matcher.js";
 import { handlePassthrough } from "./passthrough.js";
 import { handleMitm, type MitmDeps } from "./mitm.js";
 import { handleOcspHttpRequest } from "./ocsp-response.js";
+import type { ConnectionPool } from "./connection-pool.js";
 
 export interface ProxyServerDeps {
   config: ServerConfig;
@@ -26,6 +27,8 @@ export interface ProxyServerDeps {
   caCert?: forge.pki.Certificate;
   /** CA private key for signing OCSP responses (required if caCert is set) */
   caKey?: forge.pki.rsa.PrivateKey;
+  /** Upstream connection pool for MITM forwarding */
+  connectionPool?: ConnectionPool;
 }
 
 export class ProxyServer {
@@ -250,6 +253,7 @@ export class ProxyServer {
         auditLogger: this.deps.auditLogger,
         logger,
         targetTlsOptions: this.deps.targetTlsOptions,
+        connectionPool: this.deps.connectionPool,
       };
       handleMitm(clientSocket, targetHost, targetPort, machineId, mitmDeps).catch((err) => {
         logger.error({ err, target: `${targetHost}:${targetPort}` }, "MITM handler error");
@@ -331,6 +335,7 @@ export class ProxyServer {
         logger,
         targetTlsOptions: this.deps.targetTlsOptions,
         tunnelMode: true,
+        connectionPool: this.deps.connectionPool,
       };
       handleMitm(socket as import("node:net").Socket, targetHost, targetPort, machineId, mitmDeps).catch((err) => {
         logger.error({ err, target: `${targetHost}:${targetPort}` }, "Tunnel MITM handler error");

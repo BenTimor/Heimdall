@@ -146,6 +146,8 @@ pub async fn connect_and_auth(
         .await
         .context("TCP connect to tunnel server")?;
 
+    tcp.set_nodelay(true)?;
+
     let tls = connector
         .connect(server_name, tcp)
         .await

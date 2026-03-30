@@ -53,7 +53,7 @@ impl Multiplexer {
     pub fn start(framed: FramedTunnel, shutdown: tokio::sync::watch::Receiver<bool>, max_connections: u32, domain_filter: Arc<DomainFilter>) -> Arc<Self> {
         let (write_half, read_half) = framed.split();
 
-        let (tunnel_tx, tunnel_rx) = mpsc::channel::<Frame>(256);
+        let (tunnel_tx, tunnel_rx) = mpsc::channel::<Frame>(4096);
         let (tunnel_alive_tx, tunnel_alive_rx) = tokio::sync::watch::channel(true);
 
         let connections: Arc<DashMap<u32, Connection>> = Arc::new(DashMap::new());
@@ -124,7 +124,7 @@ impl Multiplexer {
 
         let conn_id = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
 
-        let (local_tx, mut local_rx) = mpsc::channel::<Bytes>(64);
+        let (local_tx, mut local_rx) = mpsc::channel::<Bytes>(512);
         self.connections.insert(conn_id, Connection { local_tx });
 
         // Send NEW_CONNECTION frame with "host:port" payload.
@@ -141,13 +141,16 @@ impl Multiplexer {
         let connections = self.connections.clone();
 
         tokio::spawn(async move {
+            if let Err(e) = local_stream.set_nodelay(true) {
+                warn!(conn_id, error = %e, "failed to set TCP_NODELAY on local stream");
+            }
             let (mut read_half, mut write_half) = local_stream.into_split();
 
             // Local -> tunnel
             let tunnel_tx_clone = tunnel_tx.clone();
             let conn_id_copy = conn_id;
             let mut upload = tokio::spawn(async move {
-                let mut buf = vec![0u8; 8192];
+                let mut buf = vec![0u8; 65536];
                 loop {
                     match read_half.read(&mut buf).await {
                         Ok(0) => break,
@@ -155,7 +158,7 @@ impl Multiplexer {
                             let frame = Frame::new(
                                 conn_id_copy,
                                 FrameType::Data,
-                                Bytes::copy_from_slice(&buf[..n]),
+                                Bytes::from(buf[..n].to_vec()),
                             );
                             if tunnel_tx_clone.send(frame).await.is_err() {
                                 break;
@@ -272,8 +275,21 @@ impl Multiplexer {
         mut rx: mpsc::Receiver<Frame>,
     ) {
         while let Some(frame) = rx.recv().await {
-            if let Err(e) = sink.send(frame).await {
+            // Feed the first frame (doesn't flush)
+            if let Err(e) = sink.feed(frame).await {
                 error!(error = %e, "tunnel write error");
+                break;
+            }
+            // Drain any additional pending frames without waiting
+            while let Ok(frame) = rx.try_recv() {
+                if let Err(e) = sink.feed(frame).await {
+                    error!(error = %e, "tunnel write error");
+                    return;
+                }
+            }
+            // Flush all buffered frames in one go
+            if let Err(e) = sink.flush().await {
+                error!(error = %e, "tunnel flush error");
                 break;
             }
         }

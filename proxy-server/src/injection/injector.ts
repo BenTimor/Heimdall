@@ -28,6 +28,17 @@ export async function injectSecrets(
   const injections: InjectionResult[] = [];
   const injectedHeaders = { ...headers };
 
+  // First pass: categorize placeholders and identify which need resolution
+  interface PendingResolution {
+    index: number;
+    headerName: string;
+    placeholder: string;
+    secretName: string;
+    config: SecretConfig;
+  }
+
+  const pending: PendingResolution[] = [];
+
   for (const { headerName, placeholder, secretName } of scanResult.placeholders) {
     const config = secretsConfig[secretName];
     if (!config) {
@@ -58,24 +69,42 @@ export async function injectSecrets(
       continue;
     }
 
-    const value = await resolver.resolve(secretName, config);
+    pending.push({
+      index: pending.length,
+      headerName,
+      placeholder,
+      secretName,
+      config,
+    });
+  }
+
+  // Second pass: resolve all eligible secrets concurrently
+  const results = await Promise.all(
+    pending.map((p) => resolver.resolve(p.secretName, p.config).catch(() => null))
+  );
+
+  // Third pass: apply resolved values to headers
+  for (let i = 0; i < pending.length; i++) {
+    const p = pending[i];
+    const value = results[i];
+
     if (value === null) {
-      log.warn({ secretName }, "Secret not found or provider returned null");
+      log.warn({ secretName: p.secretName }, "Secret not found or provider returned null");
       injections.push({
-        secretName,
-        headerName,
+        secretName: p.secretName,
+        headerName: p.headerName,
         status: "not_found",
       });
       continue;
     }
 
-    injectedHeaders[headerName] = injectedHeaders[headerName].replaceAll(
-      placeholder,
+    injectedHeaders[p.headerName] = injectedHeaders[p.headerName].replaceAll(
+      p.placeholder,
       value
     );
     injections.push({
-      secretName,
-      headerName,
+      secretName: p.secretName,
+      headerName: p.headerName,
       status: "injected",
     });
   }

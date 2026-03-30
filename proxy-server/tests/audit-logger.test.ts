@@ -22,12 +22,13 @@ describe("AuditLogger", () => {
     action: "injected",
   };
 
-  it("writes a JSON line to the audit file", () => {
+  it("writes a JSON line to the audit file", async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "guardian-audit-"));
     const auditFile = path.join(tmpDir, "audit.jsonl");
 
     const logger = new AuditLogger({ enabled: true, file: auditFile });
     logger.logRequest(sampleEntry);
+    await logger.flush();
 
     const content = fs.readFileSync(auditFile, "utf-8").trim();
     expect(content.length).toBeGreaterThan(0);

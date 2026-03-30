@@ -1,4 +1,5 @@
 import forge from "node-forge";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import { generateOcspResponse } from "./ocsp-response.js";
@@ -40,10 +41,20 @@ export class CertManager {
       return cached;
     }
 
-    const keys = forge.pki.rsa.generateKeyPair(2048);
+    // Use native crypto for RSA key generation (C++ — 5-10x faster than
+    // node-forge's pure-JS implementation), then convert PEM keys back to
+    // forge objects for certificate construction.
+    const { publicKey: pubPem, privateKey: privPem } = crypto.generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const publicKey = forge.pki.publicKeyFromPem(pubPem);
+    const privateKey = forge.pki.privateKeyFromPem(privPem);
+
     const cert = forge.pki.createCertificate();
 
-    cert.publicKey = keys.publicKey;
+    cert.publicKey = publicKey;
     cert.serialNumber = forge.util.bytesToHex(forge.random.getBytesSync(16));
 
     const now = new Date();
@@ -130,7 +141,7 @@ export class CertManager {
 
     const result = {
       cert: forge.pki.certificateToPem(cert),
-      key: forge.pki.privateKeyToPem(keys.privateKey),
+      key: forge.pki.privateKeyToPem(privateKey),
       ocspResponse,
     };
 

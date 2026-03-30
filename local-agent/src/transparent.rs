@@ -78,6 +78,9 @@ pub async fn run_transparent_listener(
         match accept_result {
             Ok((stream, peer)) => {
                 debug!(peer = %peer, "transparent: accepted connection");
+                if let Err(e) = stream.set_nodelay(true) {
+                    warn!(peer = %peer, error = %e, "failed to set TCP_NODELAY on transparent connection");
+                }
                 let ip = peer.ip();
                 {
                     let mut count = per_ip_counts.entry(ip).or_insert(0);

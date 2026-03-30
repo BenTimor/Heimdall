@@ -10,6 +10,7 @@ import { StoredProvider } from "./secrets/stored-provider.js";
 import { SecretResolver } from "./secrets/resolver.js";
 import { AuditLogger } from "./audit/audit-logger.js";
 import { ProxyServer } from "./proxy/server.js";
+import { ConnectionPool } from "./proxy/connection-pool.js";
 import { Authenticator } from "./auth/authenticator.js";
 import { ConfigAuthBackend } from "./auth/config-backend.js";
 import { DbAuthBackend } from "./auth/db-backend.js";
@@ -129,6 +130,9 @@ async function main() {
     return merged;
   }
 
+  // Create upstream connection pool for MITM forwarding
+  const connectionPool = new ConnectionPool(logger);
+
   // Create and start proxy
   const proxy = new ProxyServer({
     config,
@@ -139,6 +143,7 @@ async function main() {
     logger,
     caCert,
     caKey,
+    connectionPool,
   });
 
   // Apply initial merged secrets config
@@ -191,6 +196,7 @@ async function main() {
         await tunnelServer.stop();
       }
       await proxy.stop();
+      connectionPool.close();
       if (db) {
         db.close();
       }
