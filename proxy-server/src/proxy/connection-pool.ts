@@ -10,6 +10,8 @@ export interface AcquiredConnection {
   socket: tls.TLSSocket;
   reused: boolean;
   connectTimeMs: number;
+  tlsSessionReused: boolean | null;
+  cachedTlsSessionOffered: boolean;
 }
 
 export interface ConnectionPoolOptions {
@@ -27,10 +29,12 @@ export interface ConnectionPoolOptions {
 
 /**
  * Pool for upstream TLS connections.
- * Keeps idle connections alive for reuse, keyed by host:port.
+ * Keeps idle connections alive for reuse, keyed by host:port, and caches
+ * TLS session tickets per host:port so reconnects can attempt resumption.
  */
 export class ConnectionPool {
   private pool = new Map<string, PooledConnection[]>();
+  private tlsSessionCache = new Map<string, Buffer>();
   private idleTtlMs: number;
   private maxPerHost: number;
   private maxTotal: number;
@@ -57,7 +61,8 @@ export class ConnectionPool {
 
   /**
    * Acquire a TLS connection to host:port.
-   * Returns a reused idle connection if available, otherwise creates a new one.
+   * Returns a reused idle connection if available, otherwise creates a new one
+   * and offers any cached TLS session/ticket for that host:port.
    */
   acquire(
     host: string,
@@ -87,6 +92,8 @@ export class ConnectionPool {
           socket: entry.socket,
           reused: true,
           connectTimeMs: 0,
+          tlsSessionReused: null,
+          cachedTlsSessionOffered: false,
         });
       }
       // Socket was already dead — skip it
@@ -165,6 +172,7 @@ export class ConnectionPool {
       }
     }
     this.pool.clear();
+    this.tlsSessionCache.clear();
     this.totalCount = 0;
   }
 
@@ -180,11 +188,18 @@ export class ConnectionPool {
   ): Promise<AcquiredConnection> {
     return new Promise((resolve, reject) => {
       const startedAt = process.hrtime.bigint();
+      const k = this.key(host, port);
+      const cachedSession = this.tlsSessionCache.get(k);
       const socket = tls.connect({
         host,
         port,
         servername: host,
+        session: cachedSession,
         ...extraTlsOptions,
+      });
+
+      socket.on("session", (session) => {
+        this.tlsSessionCache.set(k, session);
       });
 
       if (this.tcpNoDelay) {
@@ -197,6 +212,8 @@ export class ConnectionPool {
           socket,
           reused: false,
           connectTimeMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
+          tlsSessionReused: typeof socket.isSessionReused === "function" ? socket.isSessionReused() : null,
+          cachedTlsSessionOffered: cachedSession !== undefined,
         });
       };
 

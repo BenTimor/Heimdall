@@ -86,7 +86,7 @@ Developer Machine                          Server
 After AUTH_OK, the agent sends `DOMAIN_LIST_REQUEST` on the control channel (conn_id 0). The server responds with `DOMAIN_LIST_RESPONSE` containing a JSON array of domain patterns (exact or `*.wildcard`). The agent polls every 10 seconds. Connections to non-matching domains bypass the tunnel entirely (direct TCP passthrough), reducing latency and server load.
 
 ### Latency instrumentation
-When `proxy-server` config sets `logging.latency.enabled: true`, the proxy emits structured tunnel/MITM timing logs (connection setup, cert cache/generation, upstream pool hit/miss, response-header latency, response streaming). The local agent emits matching debug logs keyed by `conn_id` around `NEW_CONNECTION` send/close so proxy and agent timings can be correlated without changing the wire protocol.
+When `proxy-server` config sets `logging.latency.enabled: true`, the proxy emits structured tunnel/MITM timing logs (connection setup, `waitForRequestMs`, `headerParseMs`, cert cache/generation, upstream pool hit/miss, TLS session reuse, response-header latency, response streaming). The local agent emits matching debug logs keyed by `conn_id` around `NEW_CONNECTION` send/close so proxy and agent timings can be correlated without changing the wire protocol.
 
 ### Data flow — Explicit proxy mode
 1. App sets `HTTPS_PROXY=http://127.0.0.1:19080` and sends `Authorization: Bearer __OPENAI_KEY__`

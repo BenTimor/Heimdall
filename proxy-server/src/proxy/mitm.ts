@@ -43,6 +43,8 @@ interface ForwardMetrics {
   poolReused: boolean | null;
   poolRetryCount: number;
   upstreamConnectMs: number;
+  upstreamTlsSessionReused: boolean | null;
+  upstreamCachedTlsSessionOffered: boolean;
   responseHeaderMs: number | null;
   responseStreamMs: number | null;
   totalMs: number;
@@ -130,13 +132,13 @@ export async function handleMitm(
     while (keepAlive) {
       const requestStartNs = nowNs();
       const parsed = await parseHttpHeaders(tlsServer);
-      const parseDoneNs = nowNs();
       if (!parsed) break; // Connection closed
 
       requestSeq++;
       const requestId = deps.tunnelConnId !== undefined
         ? `${machineId}:${deps.tunnelConnId}:${requestSeq}`
         : `${machineId}:${targetHost}:${targetPort}:${requestSeq}`;
+      const firstRequestOnConnection = requestSeq === 1;
 
       keepAlive = isKeepAlive(parsed.httpVersion, parsed.headers);
 
@@ -205,13 +207,18 @@ export async function handleMitm(
         method: parsed.method,
         path: parsed.path,
         keepAlive,
+        firstRequestOnConnection,
         injectedSecrets: injectedNames,
-        parseMs: nsToMs(parseDoneNs - requestStartNs),
+        waitForRequestMs: parsed.timings.waitForHeadersMs,
+        headerParseMs: parsed.timings.parseHeadersMs,
+        parseMs: parsed.timings.totalMs,
         secretResolveMs: nsToMs(injectionDoneNs - injectionStartNs),
         auditMs: nsToMs(auditDoneNs - auditStartNs),
         upstreamPoolReused: forwardMetrics.poolReused,
         upstreamPoolRetryCount: forwardMetrics.poolRetryCount,
         upstreamConnectMs: forwardMetrics.upstreamConnectMs,
+        upstreamTlsSessionReused: forwardMetrics.upstreamTlsSessionReused,
+        upstreamCachedTlsSessionOffered: forwardMetrics.upstreamCachedTlsSessionOffered,
         upstreamResponseHeaderMs: forwardMetrics.responseHeaderMs,
         upstreamResponseStreamMs: forwardMetrics.responseStreamMs,
         upstreamTotalMs: forwardMetrics.totalMs,
@@ -278,6 +285,8 @@ async function forwardToTarget(
     poolReused: null,
     poolRetryCount: 0,
     upstreamConnectMs: 0,
+    upstreamTlsSessionReused: null,
+    upstreamCachedTlsSessionOffered: false,
     responseHeaderMs: null,
     responseStreamMs: null,
     totalMs: 0,
@@ -291,6 +300,8 @@ async function forwardToTarget(
       targetSocket = acquired.socket;
       metrics.poolReused = acquired.reused;
       metrics.upstreamConnectMs += acquired.connectTimeMs;
+      metrics.upstreamTlsSessionReused = acquired.tlsSessionReused;
+      metrics.upstreamCachedTlsSessionOffered = acquired.cachedTlsSessionOffered;
     } catch (err) {
       metrics.errorStage = "connect";
       logger.warn({ err, target: `${targetHost}:${targetPort}` }, "Target connection error (MITM)");
@@ -411,6 +422,8 @@ function forwardToTargetLegacy(
     poolReused: null,
     poolRetryCount: 0,
     upstreamConnectMs: 0,
+    upstreamTlsSessionReused: null,
+    upstreamCachedTlsSessionOffered: false,
     responseHeaderMs: null,
     responseStreamMs: null,
     totalMs: 0,

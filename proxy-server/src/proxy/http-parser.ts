@@ -15,6 +15,12 @@ export type BodyInfo =
   | { type: "chunked" }
   | { type: "none" };
 
+export interface HeaderParseTimings {
+  waitForHeadersMs: number;
+  parseHeadersMs: number;
+  totalMs: number;
+}
+
 export interface ParsedHttpHeaders {
   method: string;
   path: string;
@@ -22,6 +28,7 @@ export interface ParsedHttpHeaders {
   headers: Record<string, string>;
   bodyInfo: BodyInfo;
   reader: SocketReader;
+  timings: HeaderParseTimings;
 }
 
 type ReadableSocket = Socket | TLSSocket;
@@ -178,10 +185,12 @@ export async function parseHttpHeaders(
   socket: ReadableSocket,
 ): Promise<ParsedHttpHeaders | null> {
   const reader = new SocketReader(socket);
+  const startedAt = process.hrtime.bigint();
 
   // Read headers (until \r\n\r\n)
   const HEADER_END = Buffer.from("\r\n\r\n");
   const headerBuf = await reader.readUntil(HEADER_END);
+  const headersReadyAt = process.hrtime.bigint();
   if (!headerBuf) {
     reader.detach();
     return null;
@@ -233,7 +242,23 @@ export async function parseHttpHeaders(
     bodyInfo = { type: "none" };
   }
 
-  return { method, path, httpVersion, headers, bodyInfo, reader };
+  const parsedAt = process.hrtime.bigint();
+  const waitForHeadersMs = Number(headersReadyAt - startedAt) / 1_000_000;
+  const parseHeadersMs = Number(parsedAt - headersReadyAt) / 1_000_000;
+
+  return {
+    method,
+    path,
+    httpVersion,
+    headers,
+    bodyInfo,
+    reader,
+    timings: {
+      waitForHeadersMs,
+      parseHeadersMs,
+      totalMs: waitForHeadersMs + parseHeadersMs,
+    },
+  };
 }
 
 /**

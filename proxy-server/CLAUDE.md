@@ -118,7 +118,7 @@ All config is validated through `ServerConfigSchema` in `src/config/schema.ts`. 
 
 `proxy` now also carries latency/performance knobs:
 - `proxy.tcpNoDelay` — disables Nagle's algorithm on proxy-side sockets (defaults to `true`)
-- `proxy.connectionPool.*` — enables/tunes upstream TLS keep-alive reuse
+- `proxy.connectionPool.*` — enables/tunes upstream TLS keep-alive reuse and client-side TLS session resumption to hot origins
 - `logging.latency.enabled` — emits structured per-connection / per-request timing logs for MITM and tunnel ingress
 
 Optional `tunnel` config enables the tunnel server (`TunnelConfigSchema`): port, host, TLS cert/key, heartbeat intervals.
@@ -159,7 +159,7 @@ Custom `SocketReader` class with internal buffer and async read helpers (`readUn
 ### MITM (`mitm.ts`)
 - With an upstream `ConnectionPool`, forwarded requests use `Connection: keep-alive`; without a pool they fall back to `Connection: close`
 - Fixed-length upstream responses are streamed incrementally back to the client instead of being fully buffered first
-- When `logging.latency.enabled` is on, MITM logs connection timing (cert cache/generation, TLS handshake) and per-request timing (parse, secret resolution, audit, upstream pool hit/miss, connect, response headers, response streaming, total)
+- When `logging.latency.enabled` is on, MITM logs connection timing (cert cache/generation, TLS handshake) and per-request timing (`waitForRequestMs`, `headerParseMs`, secret resolution, audit, upstream pool hit/miss, TLS session reuse, connect, response headers, response streaming, total)
 
 ### Admin Panel (`panel/`)
 - Fastify server on separate port (default 9090), opt-in via `panel.enabled: true`
@@ -194,6 +194,7 @@ Custom `SocketReader` class with internal buffer and async read helpers (`readUn
 ## Known Decisions
 
 - **Keep-alive upstream by default**: MITM prefers pooled upstream TLS connections; when pooling is disabled it falls back to `Connection: close`
+- **TLS session tickets cached per host**: when a pooled upstream socket is unavailable, new TLS connects offer the last cached session/ticket for that host:port to reduce handshake cost on reconnects
 - **Pre-generated leaf key pool**: `CertManager` keeps a small async warm pool of RSA keypairs so first-use cert issuance can often skip synchronous key generation
 - **Latency logs are opt-in**: `logging.latency.enabled` emits structured timing logs without changing the trust model or wire protocol
 - **Auth defaults to enabled**: `auth.enabled` defaults to `true` in schema
