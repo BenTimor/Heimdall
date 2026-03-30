@@ -85,7 +85,7 @@ export class SocketReader {
 
   /** Wait until the buffer has new data (or the socket ends/errors). */
   private waitForData(): Promise<void> {
-    if (this.buf.length > 0 || this.ended || this.error) {
+    if (this.ended || this.error) {
       return Promise.resolve();
     }
     return new Promise((resolve, reject) => {
