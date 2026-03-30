@@ -11,6 +11,7 @@ import { SecretResolver } from "./secrets/resolver.js";
 import { AuditLogger } from "./audit/audit-logger.js";
 import { ProxyServer } from "./proxy/server.js";
 import { ConnectionPool } from "./proxy/connection-pool.js";
+import { UpstreamHttp2Pool } from "./proxy/upstream-http2-pool.js";
 import { Authenticator } from "./auth/authenticator.js";
 import { ConfigAuthBackend } from "./auth/config-backend.js";
 import { DbAuthBackend } from "./auth/db-backend.js";
@@ -130,7 +131,7 @@ async function main() {
     return merged;
   }
 
-  // Create upstream connection pool for MITM forwarding
+  // Create upstream connection pools for MITM forwarding
   const connectionPool = config.proxy.connectionPool.enabled
     ? new ConnectionPool(logger, {
         idleTtlMs: config.proxy.connectionPool.idleTtlMs,
@@ -140,6 +141,12 @@ async function main() {
         tcpNoDelay: config.proxy.tcpNoDelay,
       })
     : null;
+
+  const upstreamHttp2Pool = new UpstreamHttp2Pool(logger, {
+    idleTtlMs: config.proxy.connectionPool.idleTtlMs,
+    cleanupIntervalMs: config.proxy.connectionPool.cleanupIntervalMs,
+    tcpNoDelay: config.proxy.tcpNoDelay,
+  });
 
   // Create and start proxy
   const proxy = new ProxyServer({
@@ -152,6 +159,7 @@ async function main() {
     caCert,
     caKey,
     connectionPool: connectionPool ?? undefined,
+    upstreamHttp2Pool,
   });
 
   // Apply initial merged secrets config
@@ -207,6 +215,7 @@ async function main() {
       }
       await proxy.stop();
       connectionPool?.close();
+      upstreamHttp2Pool.close();
       if (db) {
         db.close();
       }

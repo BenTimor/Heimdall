@@ -24,9 +24,9 @@ Your app                          Guardian Proxy                    Target API
 
 1. Client sets `HTTPS_PROXY` and makes normal HTTPS requests with placeholder tokens
 2. Proxy authenticates the client (Basic auth from the proxy URL)
-3. Proxy performs MITM on configured domains — decrypts, scans for `__PLACEHOLDER__` patterns
+3. Proxy performs MITM on configured domains — negotiates client `h2`/`http/1.1`, decrypts, and scans for `__PLACEHOLDER__` patterns
 4. Placeholders are matched against domain-bound secret configs (anti-exfiltration)
-5. Real secrets are resolved, injected, and the request is forwarded over TLS to the real target
+5. Real secrets are resolved, injected, and the request is forwarded over TLS to the real target (preferring upstream HTTP/2 when available, with HTTP/1.1 fallback)
 6. Response streams back to the client untouched
 
 ## Running Locally
@@ -161,7 +161,7 @@ Quick smoke test:
 pnpm test
 ```
 
-All 165 tests run locally with no external dependencies.
+All 169 tests run locally with no external dependencies.
 
 ## Configuration Reference
 
@@ -233,7 +233,7 @@ Only initialized if any secret uses `provider: "aws"`.
 | `level` | `info` | Log level (trace/debug/info/warn/error/fatal/silent) |
 | `audit.enabled` | `true` | Enable JSONL audit logging |
 | `audit.file` | — | Audit log file path (e.g., `logs/audit.jsonl`) |
-| `latency.enabled` | `false` | Emit structured per-connection / per-request MITM latency logs (`waitForRequestMs`, `headerParseMs`, pool hit/miss, TLS session reuse, response timing) |
+| `latency.enabled` | `false` | Emit structured per-connection / per-request MITM latency logs (client ALPN/protocol, `waitForRequestMs`, `headerParseMs`, `clientPassiveWaitMs`, `activeHandlingMs`, upstream protocol selection, pool/session reuse, TLS session reuse, response timing) |
 
 ### `panel` (optional)
 | Field | Default | Description |

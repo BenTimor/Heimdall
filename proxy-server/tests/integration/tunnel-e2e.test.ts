@@ -3,6 +3,8 @@ import * as tls from "node:tls";
 import * as https from "node:https";
 import * as http from "node:http";
 import * as net from "node:net";
+import * as http2 from "node:http2";
+import { duplexPair } from "node:stream";
 import forge from "node-forge";
 import { TunnelServer } from "../../src/tunnel/tunnel-server.js";
 import { ProxyServer } from "../../src/proxy/server.js";
@@ -13,6 +15,7 @@ import { EnvProvider } from "../../src/secrets/env-provider.js";
 import { AuditLogger } from "../../src/audit/audit-logger.js";
 import { Authenticator } from "../../src/auth/authenticator.js";
 import { ConfigAuthBackend } from "../../src/auth/config-backend.js";
+import { UpstreamHttp2Pool } from "../../src/proxy/upstream-http2-pool.js";
 import { encodeFrame, FrameType, FrameDecoder } from "../../src/tunnel/protocol.js";
 import type { ServerConfig } from "../../src/config/schema.js";
 import type { Logger } from "../../src/utils/logger.js";
@@ -86,6 +89,20 @@ function createMockHttpsServer(
   });
 }
 
+function createMockHttp2Server(
+  handler: (stream: http2.ServerHttp2Stream, headers: http2.IncomingHttpHeaders) => void,
+): Promise<{ server: http2.Http2SecureServer; port: number; cert: string; key: string }> {
+  const { cert, key } = createSelfSignedCert();
+  return new Promise((resolve) => {
+    const server = http2.createSecureServer({ cert, key });
+    server.on("stream", handler);
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address() as net.AddressInfo;
+      resolve({ server, port: addr.port, cert, key });
+    });
+  });
+}
+
 describe("Tunnel E2E", () => {
   let proxyServer: ProxyServer;
   let tunnelServer: TunnelServer;
@@ -93,6 +110,8 @@ describe("Tunnel E2E", () => {
   let mockTarget: Awaited<ReturnType<typeof createMockHttpsServer>>;
   let tunnelCert: ReturnType<typeof createSelfSignedCert>;
   let ca: ReturnType<typeof createTestCA>;
+  let logger: Logger;
+  let upstreamHttp2Pool: UpstreamHttp2Pool;
 
   beforeAll(async () => {
     process.env.TEST_API_KEY = "sk-tunnel-secret-999";
@@ -115,7 +134,12 @@ describe("Tunnel E2E", () => {
     const providers = new Map([["env", new EnvProvider()]]);
     const resolver = new SecretResolver(providers, cache);
     const auditLogger = new AuditLogger({ enabled: false });
-    const logger = createMockLogger();
+    logger = createMockLogger();
+    upstreamHttp2Pool = new UpstreamHttp2Pool(logger, {
+      idleTtlMs: 30_000,
+      cleanupIntervalMs: 10_000,
+      tcpNoDelay: true,
+    });
 
     const config: ServerConfig = {
       proxy: {
@@ -158,6 +182,7 @@ describe("Tunnel E2E", () => {
       authenticator,
       logger,
       targetTlsOptions: { rejectUnauthorized: false },
+      upstreamHttp2Pool,
     });
     await proxyServer.start();
 
@@ -182,6 +207,7 @@ describe("Tunnel E2E", () => {
   afterAll(async () => {
     await tunnelServer.stop();
     await proxyServer.stop();
+    upstreamHttp2Pool.close();
     mockTarget.server.close();
     delete process.env.TEST_API_KEY;
   });
@@ -321,6 +347,97 @@ describe("Tunnel E2E", () => {
       socket.destroy();
     } finally {
       echoServer.server.close();
+    }
+  });
+
+  it("handleTunnelConnection supports client-facing h2 MITM", async () => {
+    vi.clearAllMocks();
+
+    const h2Target = await createMockHttp2Server((stream, headers) => {
+      const regularHeaders: Record<string, string> = {};
+      for (const [name, value] of Object.entries(headers)) {
+        if (name.startsWith(":")) continue;
+        regularHeaders[name] = Array.isArray(value) ? value.join(", ") : String(value);
+      }
+
+      const body = JSON.stringify({
+        upstreamProtocol: "h2",
+        path: headers[":path"],
+        method: headers[":method"],
+        headers: regularHeaders,
+      });
+
+      stream.respond({
+        ":status": 200,
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body).toString(),
+      });
+      stream.end(body);
+    });
+
+    try {
+      const [proxySide, clientSide] = duplexPair();
+      proxyServer.handleTunnelConnection(proxySide, "127.0.0.1", h2Target.port, "tunnel-agent", { connId: 42 });
+
+      const tlsSocket = await new Promise<tls.TLSSocket>((resolve, reject) => {
+        const socket = tls.connect(
+          {
+            socket: clientSide as unknown as net.Socket,
+            servername: "127.0.0.1",
+            rejectUnauthorized: false,
+            ALPNProtocols: ["h2", "http/1.1"],
+          },
+          () => resolve(socket),
+        );
+        socket.on("error", reject);
+      });
+
+      const session = http2.connect(`https://127.0.0.1:${h2Target.port}`, {
+        createConnection: () => tlsSocket,
+      });
+
+      const result = await new Promise<{ statusCode: number; body: string; clientAlpn: string | false }>((resolve, reject) => {
+        const req = session.request({
+          ":method": "GET",
+          ":path": "/tunnel-h2",
+          authorization: "Bearer __TEST_API_KEY__",
+        });
+
+        let responseHeaders: http2.IncomingHttpHeaders = {};
+        const chunks: Buffer[] = [];
+
+        req.on("response", (headers) => {
+          responseHeaders = headers;
+        });
+        req.on("data", (chunk: Buffer) => chunks.push(chunk));
+        req.on("end", () => {
+          const statusCode = typeof responseHeaders[":status"] === "number"
+            ? responseHeaders[":status"]
+            : parseInt(String(responseHeaders[":status"] ?? "0"), 10);
+          resolve({
+            statusCode,
+            body: Buffer.concat(chunks).toString("utf-8"),
+            clientAlpn: (session.socket as tls.TLSSocket).alpnProtocol,
+          });
+          session.close();
+        });
+        req.on("error", reject);
+        session.on("error", reject);
+        req.end();
+      });
+
+      expect(result.clientAlpn).toBe("h2");
+      expect(result.statusCode).toBe(200);
+      const body = JSON.parse(result.body);
+      expect(body.upstreamProtocol).toBe("h2");
+      expect(body.headers.authorization).toBe("Bearer sk-tunnel-secret-999");
+
+      const mitmLogs = ((logger.debug as unknown as { mock: { calls: Array<[Record<string, unknown>, string]> } }).mock.calls)
+        .filter(([, message]) => message === "MITM request processed")
+        .map(([fields]) => fields);
+      expect(mitmLogs.some((fields) => fields.connId === 42 && fields.clientProtocol === "h2" && fields.upstreamProtocol === "h2")).toBe(true);
+    } finally {
+      h2Target.server.close();
     }
   });
 });

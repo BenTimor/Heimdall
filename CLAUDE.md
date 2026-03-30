@@ -11,7 +11,7 @@ Transparent secret injection for HTTPS traffic. Two components: a Node.js proxy 
 # Proxy server (Node.js)
 cd proxy-server
 pnpm install && pnpm run generate-ca
-pnpm test                # 165 tests
+pnpm test                # 169 tests
 pnpm run dev             # start dev server
 
 # Local agent (Rust)
@@ -42,7 +42,7 @@ Guardian/
       panel/              # Admin panel (Fastify, SQLite, vanilla SPA)
       config/             # Zod schemas + YAML loader
       utils/              # Logger, domain matcher
-    tests/                # 19 test files (165 tests)
+    tests/                # 19 test files (169 tests)
 
   local-agent/            # Rust — developer machine daemon
     src/
@@ -86,7 +86,7 @@ Developer Machine                          Server
 After AUTH_OK, the agent sends `DOMAIN_LIST_REQUEST` on the control channel (conn_id 0). The server responds with `DOMAIN_LIST_RESPONSE` containing a JSON array of domain patterns (exact or `*.wildcard`). The agent polls every 10 seconds. Connections to non-matching domains bypass the tunnel entirely (direct TCP passthrough), reducing latency and server load.
 
 ### Latency instrumentation
-When `proxy-server` config sets `logging.latency.enabled: true`, the proxy emits structured tunnel/MITM timing logs (connection setup, `waitForRequestMs`, `headerParseMs`, cert cache/generation, upstream pool hit/miss, TLS session reuse, response-header latency, response streaming). The local agent emits matching debug logs keyed by `conn_id` around `NEW_CONNECTION` send/close so proxy and agent timings can be correlated without changing the wire protocol.
+When `proxy-server` config sets `logging.latency.enabled: true`, the proxy emits structured tunnel/MITM timing logs (connection setup, negotiated client ALPN/protocol, `waitForRequestMs`, `headerParseMs`, `clientPassiveWaitMs`, `activeHandlingMs`, cert cache/generation, upstream protocol selection, pool/session reuse, TLS session reuse, response-header latency, response streaming). The local agent emits matching debug logs keyed by `conn_id` around `NEW_CONNECTION` send/close so proxy and agent timings can be correlated without changing the wire protocol.
 
 ### Data flow — Explicit proxy mode
 1. App sets `HTTPS_PROXY=http://127.0.0.1:19080` and sends `Authorization: Bearer __OPENAI_KEY__`
@@ -94,7 +94,7 @@ When `proxy-server` config sets `logging.latency.enabled: true`, the proxy emits
    - **No match** → direct TCP passthrough to target (no tunnel)
    - **Match** → forwards as NEW_CONNECTION frame through tunnel
 3. Tunnel server creates VirtualSocket, routes to ProxyServer.handleTunnelConnection()
-4. Proxy performs MITM: decrypt TLS → scan headers → inject secrets → forward to real API
+4. Proxy performs MITM: terminate TLS, negotiate client `h2`/`http/1.1`, scan headers, inject secrets, then forward to the real API (preferring upstream HTTP/2 with HTTP/1.1 fallback)
 5. Fixed-length responses are streamed back incrementally (not fully buffered first)
 6. Response flows back through the same path
 

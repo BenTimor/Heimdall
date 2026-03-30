@@ -10,7 +10,7 @@ Secret-injecting HTTPS CONNECT proxy. Clients set `HTTPS_PROXY=http://machineId:
 pnpm install          # install deps
 pnpm run build        # tsup → dist/
 pnpm run dev          # tsx src/index.ts (hot reload)
-pnpm test             # vitest run (all 165 tests)
+pnpm test             # vitest run (all 169 tests)
 pnpm test:watch       # vitest in watch mode
 pnpm run lint         # tsc --noEmit
 pnpm run generate-ca  # create certs/ca.crt + ca.key
@@ -24,9 +24,10 @@ Client (HTTPS_PROXY) → CONNECT → ProxyServer
   ├── Bypass domain? → Passthrough (bidirectional TCP pipe)
   └── Has secrets for domain? → MITM
         ├── Generate per-host TLS cert (signed by local CA)
-        ├── Decrypt → Parse HTTP/1.1 → Scan for __PLACEHOLDERS__
+        ├── Terminate TLS → negotiate client ALPN (`h2` or `http/1.1`)
+        ├── Scan for __PLACEHOLDERS__
         ├── Resolve secrets (env/AWS) → Inject into headers
-        ├── Forward to real target (with Connection: close)
+        ├── Forward to real target (prefer upstream `h2`, fall back to `http/1.1`)
         └── Stream response back to client
 
 Agent (Rust) → TLS → TunnelServer
@@ -47,10 +48,11 @@ src/
     loader.ts               # YAML → parse → validate
   proxy/
     server.ts               # ProxyServer class (CONNECT handler + handleTunnelConnection)
-    mitm.ts                 # MITM handler: TLS wrap → parse → inject → forward (tunnelMode)
+    mitm.ts                 # MITM handler: TLS terminate → ALPN/client protocol handling → inject → forward
     passthrough.ts          # Bidirectional TCP pipe (tunnelMode skips 200 response)
-    http-parser.ts          # SocketReader + parseHttpRequest/serializeHttpRequest
+    http-parser.ts          # SocketReader + HTTP/1.1 parser helpers for upstream streaming paths
     cert-manager.ts         # Per-hostname TLS cert generation (node-forge)
+    upstream-http2-pool.ts  # Reusable upstream HTTP/2 session manager + ALPN fallback cache
   tunnel/
     protocol.ts             # Binary frame encode/decode (FrameType, Frame, FrameDecoder)
     session-manager.ts      # AgentSession, SessionManager, VirtualSocket (Duplex stream)
@@ -157,9 +159,11 @@ When `tunnelMode: true` in MitmDeps or PassthroughOptions:
 Custom `SocketReader` class with internal buffer and async read helpers (`readUntil`, `readExact`, `readSome`, `readLine`). Handles Content-Length and chunked transfer encoding. The parser detaches from the socket after reading so MITM can reuse it for keep-alive loops.
 
 ### MITM (`mitm.ts`)
-- With an upstream `ConnectionPool`, forwarded requests use `Connection: keep-alive`; without a pool they fall back to `Connection: close`
+- Client-facing MITM now negotiates `h2` or `http/1.1` via ALPN and handles both through a per-connection secure server compatibility layer
+- Upstream forwarding prefers pooled HTTP/2 sessions when the origin negotiates `h2`; otherwise it falls back to the existing HTTP/1.1 TLS path
+- The custom `http-parser.ts` helpers are still used for raw upstream HTTP/1.1 response parsing/streaming and for request/response framing translation between H1 and H2
 - Fixed-length upstream responses are streamed incrementally back to the client instead of being fully buffered first
-- When `logging.latency.enabled` is on, MITM logs connection timing (cert cache/generation, TLS handshake) and per-request timing (`waitForRequestMs`, `headerParseMs`, secret resolution, audit, upstream pool hit/miss, TLS session reuse, connect, response headers, response streaming, total)
+- When `logging.latency.enabled` is on, MITM logs connection timing (cert cache/generation, TLS handshake, client ALPN/protocol) and per-request timing (`waitForRequestMs`, `headerParseMs`, `clientPassiveWaitMs`, `activeHandlingMs`, upstream protocol, pool/session reuse, TLS session reuse, response headers, response streaming, total)
 
 ### Admin Panel (`panel/`)
 - Fastify server on separate port (default 9090), opt-in via `panel.enabled: true`
@@ -176,8 +180,8 @@ Custom `SocketReader` class with internal buffer and async read helpers (`readUn
 
 ### Testing
 - **Unit tests**: Mock dependencies, test each module in isolation
-- **Integration tests**: Real `ProxyServer` + mock HTTPS target + raw socket CONNECT + TLS upgrade
-- **Tunnel E2E tests**: Mock tunnel client speaking binary protocol → inject → verify
+- **Integration tests**: Real `ProxyServer` + mock HTTPS/HTTP2 targets + raw socket CONNECT + TLS upgrade
+- **Tunnel E2E tests**: Mock tunnel client / virtual tunnel socket → inject → verify, including client-facing HTTP/2 over tunnel mode
 - Tests use `targetTlsOptions: { rejectUnauthorized: false }` since mock targets have self-signed certs
 - Test response parsers handle chunked transfer encoding
 - `proxy-hardening.test.ts` includes a delayed fixed-length response case to ensure MITM streams the body before the upstream response fully completes

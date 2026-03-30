@@ -3,6 +3,7 @@ import * as https from "node:https";
 import * as http from "node:http";
 import * as tls from "node:tls";
 import * as net from "node:net";
+import * as http2 from "node:http2";
 import forge from "node-forge";
 import { ProxyServer } from "../../src/proxy/server.js";
 import { CertManager } from "../../src/proxy/cert-manager.js";
@@ -12,6 +13,7 @@ import { EnvProvider } from "../../src/secrets/env-provider.js";
 import { AuditLogger } from "../../src/audit/audit-logger.js";
 import { Authenticator } from "../../src/auth/authenticator.js";
 import { ConfigAuthBackend } from "../../src/auth/config-backend.js";
+import { UpstreamHttp2Pool } from "../../src/proxy/upstream-http2-pool.js";
 import type { ServerConfig } from "../../src/config/schema.js";
 import type { Logger } from "../../src/utils/logger.js";
 
@@ -83,6 +85,154 @@ function createMockHttpsServer(
       const addr = server.address() as net.AddressInfo;
       resolve({ server, port: addr.port, host: "127.0.0.1", cert: certPem, key: keyPem });
     });
+  });
+}
+
+function createMockHttp2Server(
+  handler: (stream: http2.ServerHttp2Stream, headers: http2.IncomingHttpHeaders) => void,
+): Promise<{ server: http2.Http2SecureServer; port: number; host: string; cert: string; key: string }> {
+  const keys = forge.pki.rsa.generateKeyPair(2048);
+  const cert = forge.pki.createCertificate();
+  cert.publicKey = keys.publicKey;
+  cert.serialNumber = "03";
+  cert.validity.notBefore = new Date();
+  cert.validity.notAfter = new Date();
+  cert.validity.notAfter.setFullYear(cert.validity.notAfter.getFullYear() + 1);
+  cert.setSubject([{ name: "commonName", value: "127.0.0.1" }]);
+  cert.setIssuer([{ name: "commonName", value: "127.0.0.1" }]);
+  cert.setExtensions([
+    { name: "subjectAltName", altNames: [{ type: 7, ip: "127.0.0.1" }] },
+  ]);
+  cert.sign(keys.privateKey, forge.md.sha256.create());
+
+  const certPem = forge.pki.certificateToPem(cert);
+  const keyPem = forge.pki.privateKeyToPem(keys.privateKey);
+
+  return new Promise((resolve) => {
+    const server = http2.createSecureServer({ cert: certPem, key: keyPem });
+    server.on("stream", handler);
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address() as net.AddressInfo;
+      resolve({ server, port: addr.port, host: "127.0.0.1", cert: certPem, key: keyPem });
+    });
+  });
+}
+
+function connectThroughProxyTls(
+  proxyPort: number,
+  targetHost: string,
+  targetPort: number,
+  proxyAuth?: string,
+  tlsOptions: tls.ConnectionOptions = {},
+): Promise<tls.TLSSocket> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("CONNECT timeout")), 10000);
+
+    const proxySocket = net.connect(proxyPort, "127.0.0.1", () => {
+      let connectLine = `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\n`;
+      if (proxyAuth) {
+        connectLine += `Proxy-Authorization: Basic ${Buffer.from(proxyAuth).toString("base64")}\r\n`;
+      }
+      connectLine += "\r\n";
+      proxySocket.write(connectLine);
+    });
+
+    let dataBuf = Buffer.alloc(0);
+    const onProxyData = (chunk: Buffer) => {
+      dataBuf = Buffer.concat([dataBuf, chunk]);
+      const headerEnd = dataBuf.indexOf("\r\n\r\n");
+      if (headerEnd === -1) return;
+
+      proxySocket.removeListener("data", onProxyData);
+      const statusLine = dataBuf.subarray(0, headerEnd).toString().split("\r\n")[0] ?? "";
+      const statusCode = parseInt(statusLine.split(" ")[1] ?? "0", 10);
+      if (statusCode !== 200) {
+        clearTimeout(timeout);
+        proxySocket.destroy();
+        reject(new Error(`CONNECT failed with ${statusCode}`));
+        return;
+      }
+
+      const tlsSocket = tls.connect(
+        {
+          socket: proxySocket,
+          servername: targetHost,
+          rejectUnauthorized: false,
+          ...tlsOptions,
+        },
+        () => {
+          clearTimeout(timeout);
+          resolve(tlsSocket);
+        },
+      );
+
+      tlsSocket.on("error", (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    };
+
+    proxySocket.on("data", onProxyData);
+    proxySocket.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+  });
+}
+
+async function requestThroughProxyHttp2(opts: {
+  proxyPort: number;
+  targetHost: string;
+  targetPort: number;
+  path: string;
+  headers?: http2.OutgoingHttpHeaders;
+  auth?: string;
+}): Promise<{ statusCode: number; headers: http2.IncomingHttpHeaders; body: string; clientAlpn: string | false }> {
+  const tlsSocket = await connectThroughProxyTls(
+    opts.proxyPort,
+    opts.targetHost,
+    opts.targetPort,
+    opts.auth,
+    { ALPNProtocols: ["h2", "http/1.1"] },
+  );
+
+  const authority = `https://${opts.targetHost}:${opts.targetPort}`;
+  const session = http2.connect(authority, {
+    createConnection: () => tlsSocket,
+  });
+
+  return new Promise((resolve, reject) => {
+    const req = session.request({
+      ":method": "GET",
+      ":path": opts.path,
+      ...(opts.headers ?? {}),
+    });
+
+    let responseHeaders: http2.IncomingHttpHeaders = {};
+    const chunks: Buffer[] = [];
+
+    req.on("response", (headers) => {
+      responseHeaders = headers;
+    });
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      const statusCode = typeof responseHeaders[":status"] === "number"
+        ? responseHeaders[":status"]
+        : parseInt(String(responseHeaders[":status"] ?? "0"), 10);
+      session.close();
+      resolve({
+        statusCode,
+        headers: responseHeaders,
+        body: Buffer.concat(chunks).toString("utf-8"),
+        clientAlpn: (session.socket as tls.TLSSocket).alpnProtocol,
+      });
+    });
+    req.on("error", (err) => {
+      session.destroy();
+      reject(err);
+    });
+    session.on("error", reject);
+    req.end();
   });
 }
 
@@ -439,5 +589,194 @@ describe("Proxy E2E", () => {
     // Header injection should work
     expect(respBody.headers.authorization).toBe("Bearer sk-test-secret-123");
     expect(respBody.method).toBe("POST");
+  });
+});
+
+describe("Proxy H2 E2E", () => {
+  let proxy: ProxyServer;
+  let proxyPort: number;
+  let h1Target: Awaited<ReturnType<typeof createMockHttpsServer>>;
+  let h2Target: Awaited<ReturnType<typeof createMockHttp2Server>>;
+  let ca: ReturnType<typeof createTestCA>;
+  let logger: Logger;
+  let upstreamHttp2Pool: UpstreamHttp2Pool;
+
+  beforeAll(async () => {
+    process.env.TEST_API_KEY = "sk-h2-secret-456";
+
+    ca = createTestCA();
+    logger = createMockLogger();
+    upstreamHttp2Pool = new UpstreamHttp2Pool(logger, {
+      idleTtlMs: 30_000,
+      cleanupIntervalMs: 10_000,
+      tcpNoDelay: true,
+    });
+
+    h1Target = await createMockHttpsServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        upstreamProtocol: "http/1.1",
+        path: req.url,
+        method: req.method,
+        headers: req.headers,
+      }));
+    });
+
+    h2Target = await createMockHttp2Server((stream, headers) => {
+      const regularHeaders: Record<string, string> = {};
+      for (const [name, value] of Object.entries(headers)) {
+        if (name.startsWith(":")) continue;
+        regularHeaders[name] = Array.isArray(value) ? value.join(", ") : String(value);
+      }
+
+      const body = JSON.stringify({
+        upstreamProtocol: "h2",
+        path: headers[":path"],
+        method: headers[":method"],
+        headers: regularHeaders,
+      });
+
+      stream.respond({
+        ":status": 200,
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body).toString(),
+      });
+      stream.end(body);
+    });
+
+    const certManager = new CertManager(ca.caCertPem, ca.caKeyPem);
+    const cache = new SecretCache(300_000);
+    const providers = new Map([["env", new EnvProvider()]]);
+    const resolver = new SecretResolver(providers, cache);
+    const auditLogger = new AuditLogger({ enabled: false });
+
+    const config: ServerConfig = {
+      proxy: {
+        port: 0,
+        host: "127.0.0.1",
+        tcpNoDelay: true,
+        connectionPool: {
+          enabled: true,
+          idleTtlMs: 30_000,
+          maxPerHost: 6,
+          maxTotal: 256,
+          cleanupIntervalMs: 10_000,
+        },
+      },
+      ca: { certFile: "", keyFile: "" },
+      secrets: {
+        TEST_API_KEY: {
+          provider: "env",
+          path: "TEST_API_KEY",
+          allowedDomains: ["127.0.0.1"],
+        },
+      },
+      cache: { enabled: true, defaultTtlSeconds: 300 },
+      auth: {
+        enabled: true,
+        clients: [{ machineId: "h2-machine", token: "h2-token-123" }],
+      },
+      bypass: { domains: [] },
+      aws: { region: "us-east-1" },
+      logging: { level: "silent", audit: { enabled: false }, latency: { enabled: false } },
+    };
+
+    const authenticator = new Authenticator({ enabled: config.auth.enabled }, new ConfigAuthBackend(config.auth));
+
+    proxy = new ProxyServer({
+      config,
+      certManager,
+      resolver,
+      auditLogger,
+      authenticator,
+      logger,
+      targetTlsOptions: { rejectUnauthorized: false },
+      upstreamHttp2Pool,
+    });
+
+    await proxy.start();
+    proxyPort = proxy.address!.port;
+  });
+
+  afterAll(async () => {
+    await proxy.stop();
+    upstreamHttp2Pool.close();
+    h1Target.server.close();
+    h2Target.server.close();
+    delete process.env.TEST_API_KEY;
+  });
+
+  it("speaks client-facing h2 and uses upstream h2 when the origin supports it", async () => {
+    vi.clearAllMocks();
+
+    const result = await requestThroughProxyHttp2({
+      proxyPort,
+      targetHost: "127.0.0.1",
+      targetPort: h2Target.port,
+      path: "/h2-upstream",
+      headers: {
+        authorization: "Bearer __TEST_API_KEY__",
+      },
+      auth: "h2-machine:h2-token-123",
+    });
+
+    expect(result.clientAlpn).toBe("h2");
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body);
+    expect(body.upstreamProtocol).toBe("h2");
+    expect(body.headers.authorization).toBe("Bearer sk-h2-secret-456");
+
+    const mitmLogs = ((logger.debug as unknown as { mock: { calls: Array<[Record<string, unknown>, string]> } }).mock.calls)
+      .filter(([, message]) => message === "MITM request processed")
+      .map(([fields]) => fields);
+    expect(mitmLogs.some((fields) => fields.clientProtocol === "h2" && fields.upstreamProtocol === "h2")).toBe(true);
+  });
+
+  it("falls back to upstream http/1.1 when the origin does not negotiate h2", async () => {
+    vi.clearAllMocks();
+
+    const result = await requestThroughProxyHttp2({
+      proxyPort,
+      targetHost: "127.0.0.1",
+      targetPort: h1Target.port,
+      path: "/h1-fallback",
+      headers: {
+        authorization: "Bearer __TEST_API_KEY__",
+      },
+      auth: "h2-machine:h2-token-123",
+    });
+
+    expect(result.clientAlpn).toBe("h2");
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body);
+    expect(body.upstreamProtocol).toBe("http/1.1");
+    expect(body.headers.authorization).toBe("Bearer sk-h2-secret-456");
+
+    const mitmLogs = ((logger.debug as unknown as { mock: { calls: Array<[Record<string, unknown>, string]> } }).mock.calls)
+      .filter(([, message]) => message === "MITM request processed")
+      .map(([fields]) => fields);
+    expect(mitmLogs.some((fields) => fields.clientProtocol === "h2" && fields.upstreamProtocol === "http/1.1")).toBe(true);
+  });
+
+  it("can use upstream h2 even for an http/1.1 client", async () => {
+    vi.clearAllMocks();
+
+    const result = await requestThroughProxy(
+      proxyPort,
+      "127.0.0.1",
+      h2Target.port,
+      "GET /h1-client-h2-origin HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer __TEST_API_KEY__\r\nConnection: close\r\n\r\n",
+      "h2-machine:h2-token-123",
+    );
+
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body);
+    expect(body.upstreamProtocol).toBe("h2");
+    expect(body.headers.authorization).toBe("Bearer sk-h2-secret-456");
+
+    const mitmLogs = ((logger.debug as unknown as { mock: { calls: Array<[Record<string, unknown>, string]> } }).mock.calls)
+      .filter(([, message]) => message === "MITM request processed")
+      .map(([fields]) => fields);
+    expect(mitmLogs.some((fields) => fields.clientProtocol === "http/1.1" && fields.upstreamProtocol === "h2")).toBe(true);
   });
 });

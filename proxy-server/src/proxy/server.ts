@@ -13,6 +13,7 @@ import { handlePassthrough } from "./passthrough.js";
 import { handleMitm, type MitmDeps } from "./mitm.js";
 import { handleOcspHttpRequest } from "./ocsp-response.js";
 import type { ConnectionPool } from "./connection-pool.js";
+import type { UpstreamHttp2Pool } from "./upstream-http2-pool.js";
 
 export interface ProxyServerDeps {
   config: ServerConfig;
@@ -27,8 +28,10 @@ export interface ProxyServerDeps {
   caCert?: forge.pki.Certificate;
   /** CA private key for signing OCSP responses (required if caCert is set) */
   caKey?: forge.pki.rsa.PrivateKey;
-  /** Upstream connection pool for MITM forwarding */
+  /** Upstream HTTP/1.1 connection pool for MITM forwarding */
   connectionPool?: ConnectionPool;
+  /** Upstream HTTP/2 session pool for MITM forwarding */
+  upstreamHttp2Pool?: UpstreamHttp2Pool;
 }
 
 export class ProxyServer {
@@ -261,6 +264,7 @@ export class ProxyServer {
         logger,
         targetTlsOptions: this.deps.targetTlsOptions,
         connectionPool: this.deps.connectionPool,
+        upstreamHttp2Pool: this.deps.upstreamHttp2Pool,
         latencyLoggingEnabled: this.config.logging.latency.enabled,
         tcpNoDelay: this.config.proxy.tcpNoDelay,
       };
@@ -346,6 +350,7 @@ export class ProxyServer {
         targetTlsOptions: this.deps.targetTlsOptions,
         tunnelMode: true,
         connectionPool: this.deps.connectionPool,
+        upstreamHttp2Pool: this.deps.upstreamHttp2Pool,
         latencyLoggingEnabled: this.config.logging.latency.enabled,
         tunnelConnId: context?.connId,
         tunnelAcceptedAtNs: context?.tunnelAcceptedAtNs,
