@@ -1,6 +1,13 @@
 proxy:
   port: 8080
   host: "0.0.0.0"
+  tcpNoDelay: true
+  connectionPool:
+    enabled: true
+    idleTtlMs: 30000
+    maxPerHost: 6
+    maxTotal: 256
+    cleanupIntervalMs: 10000
 
 ca:
   certFile: "certs/ca.crt"
@@ -44,6 +51,8 @@ logging:
   audit:
     enabled: true
     file: "logs/audit.jsonl"
+  latency:
+    enabled: false
 
 # Admin panel — opt-in web UI for managing clients, secrets, and audit logs.
 # Disabled by default. Uncomment the section below to enable.

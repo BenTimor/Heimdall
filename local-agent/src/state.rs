@@ -1,8 +1,8 @@
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::SystemTime;
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 
 /// State tracking for runtime CA trust environment variables.
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -63,10 +63,8 @@ impl InstallState {
         if !path.exists() {
             return Ok(None);
         }
-        let contents = std::fs::read_to_string(&path)
-            .context("reading install state")?;
-        let state: Self = serde_json::from_str(&contents)
-            .context("parsing install state")?;
+        let contents = std::fs::read_to_string(&path).context("reading install state")?;
+        let state: Self = serde_json::from_str(&contents).context("parsing install state")?;
         Ok(Some(state))
     }
 
@@ -74,13 +72,10 @@ impl InstallState {
     pub fn save(&self) -> Result<()> {
         let path = Self::state_path();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .context("creating state directory")?;
+            std::fs::create_dir_all(parent).context("creating state directory")?;
         }
-        let json = serde_json::to_string_pretty(self)
-            .context("serializing install state")?;
-        std::fs::write(&path, json)
-            .context("writing install state")?;
+        let json = serde_json::to_string_pretty(self).context("serializing install state")?;
+        std::fs::write(&path, json).context("writing install state")?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -98,8 +93,7 @@ impl InstallState {
     pub fn delete() -> Result<()> {
         let path = Self::state_path();
         if path.exists() {
-            std::fs::remove_file(&path)
-                .context("removing install state file")?;
+            std::fs::remove_file(&path).context("removing install state file")?;
         }
         Ok(())
     }

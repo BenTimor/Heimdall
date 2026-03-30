@@ -102,7 +102,10 @@ pub async fn run_transparent_listener(
                     }
                 };
                 if semaphore.available_permits() == 0 {
-                    warn!("transparent listener at max concurrent connections ({})", MAX_CONCURRENT_CONNECTIONS);
+                    warn!(
+                        "transparent listener at max concurrent connections ({})",
+                        MAX_CONCURRENT_CONNECTIONS
+                    );
                 }
                 tokio::spawn(async move {
                     if let Err(e) = handle_transparent(stream, mux, &df).await {

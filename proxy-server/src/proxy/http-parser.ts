@@ -120,6 +120,19 @@ export class SocketReader {
     return Buffer.from(result);
   }
 
+  /** Read up to maxBytes, returning as soon as any data is available. */
+  async readSome(maxBytes: number): Promise<Buffer | null> {
+    while (this.buf.length === 0) {
+      if (this.ended) return null;
+      await this.waitForData();
+    }
+
+    const n = Math.max(1, Math.min(maxBytes, this.buf.length));
+    const result = this.buf.subarray(0, n);
+    this.buf = this.buf.subarray(n);
+    return Buffer.from(result);
+  }
+
   /** Read a single CRLF-terminated line. Returns the line WITHOUT the CRLF. */
   async readLine(): Promise<string | null> {
     const CRLF = Buffer.from("\r\n");

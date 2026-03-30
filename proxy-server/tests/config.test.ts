@@ -8,7 +8,18 @@ import { loadConfig } from "../src/config/loader.js";
 describe("ServerConfigSchema", () => {
   it("parses a full valid config", () => {
     const input = {
-      proxy: { port: 9090, host: "127.0.0.1" },
+      proxy: {
+        port: 9090,
+        host: "127.0.0.1",
+        tcpNoDelay: true,
+        connectionPool: {
+          enabled: true,
+          idleTtlMs: 15_000,
+          maxPerHost: 8,
+          maxTotal: 512,
+          cleanupIntervalMs: 5_000,
+        },
+      },
       ca: { certFile: "ca.crt", keyFile: "ca.key" },
       secrets: {
         MY_KEY: {
@@ -24,12 +35,18 @@ describe("ServerConfigSchema", () => {
       },
       bypass: { domains: ["*.corp"] },
       aws: { region: "eu-west-1" },
-      logging: { level: "debug", audit: { enabled: true, file: "a.jsonl" } },
+      logging: {
+        level: "debug",
+        audit: { enabled: true, file: "a.jsonl" },
+        latency: { enabled: true },
+      },
     };
     const result = ServerConfigSchema.parse(input);
     expect(result.proxy.port).toBe(9090);
     expect(result.secrets.MY_KEY.provider).toBe("env");
     expect(result.auth.clients).toHaveLength(1);
+    expect(result.proxy.connectionPool.maxPerHost).toBe(8);
+    expect(result.logging.latency.enabled).toBe(true);
   });
 
   it("applies default values for missing optional fields", () => {
@@ -40,7 +57,10 @@ describe("ServerConfigSchema", () => {
     expect(result.cache.defaultTtlSeconds).toBe(300);
     expect(result.auth.enabled).toBe(true);
     expect(result.aws.region).toBe("us-east-1");
+    expect(result.proxy.tcpNoDelay).toBe(true);
+    expect(result.proxy.connectionPool.enabled).toBe(true);
     expect(result.logging.level).toBe("info");
+    expect(result.logging.latency.enabled).toBe(false);
   });
 
   it("rejects invalid port", () => {

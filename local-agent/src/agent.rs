@@ -61,7 +61,9 @@ pub async fn run(config: AgentConfig) -> Result<()> {
     // === Reconnect loop ===
     loop {
         // Take the framed tunnel for this session (always Some at loop entry).
-        let framed = pending_framed.take().expect("pending_framed must be Some at loop start");
+        let framed = pending_framed
+            .take()
+            .expect("pending_framed must be Some at loop start");
 
         // Per-session shutdown channel: signals services to stop when the tunnel
         // dies or when the top-level shutdown fires.
@@ -81,6 +83,7 @@ pub async fn run(config: AgentConfig) -> Result<()> {
             session_shutdown_rx.clone(),
             max_connections,
             domain_filter.clone(),
+            config.auth.machine_id.clone(),
         );
         let mut tunnel_alive = multiplexer.subscribe_tunnel_alive();
 
@@ -117,7 +120,9 @@ pub async fn run(config: AgentConfig) -> Result<()> {
         let health_config = config.health.clone();
         let health_shutdown = session_shutdown_rx.clone();
         let health_handle = tokio::spawn(async move {
-            if let Err(e) = health::run_health_server(&health_config, health_state, health_shutdown).await {
+            if let Err(e) =
+                health::run_health_server(&health_config, health_state, health_shutdown).await
+            {
                 error!(error = %e, "health server error");
             }
         });
@@ -128,7 +133,14 @@ pub async fn run(config: AgentConfig) -> Result<()> {
         let proxy_shutdown = session_shutdown_rx.clone();
         let proxy_domain_filter = domain_filter.clone();
         let proxy_handle = tokio::spawn(async move {
-            if let Err(e) = local_proxy::run_local_proxy(&proxy_config, proxy_mux, proxy_shutdown, proxy_domain_filter).await {
+            if let Err(e) = local_proxy::run_local_proxy(
+                &proxy_config,
+                proxy_mux,
+                proxy_shutdown,
+                proxy_domain_filter,
+            )
+            .await
+            {
                 error!(error = %e, "local proxy error");
             }
         });
@@ -140,9 +152,13 @@ pub async fn run(config: AgentConfig) -> Result<()> {
             let transparent_shutdown = session_shutdown_rx.clone();
             let transparent_domain_filter = domain_filter.clone();
             Some(tokio::spawn(async move {
-                if let Err(e) =
-                    transparent::run_transparent_listener(&transparent_config, transparent_mux, transparent_shutdown, transparent_domain_filter)
-                        .await
+                if let Err(e) = transparent::run_transparent_listener(
+                    &transparent_config,
+                    transparent_mux,
+                    transparent_shutdown,
+                    transparent_domain_filter,
+                )
+                .await
                 {
                     error!(error = %e, "transparent listener error");
                 }
@@ -336,7 +352,11 @@ fn start_windivert_if_configured(
     excluded_pids.push(std::process::id());
 
     if let Some(proxy_pid) = find_pid_listening_on(config.server.port) {
-        info!(proxy_pid, port = config.server.port, "auto-detected proxy server PID");
+        info!(
+            proxy_pid,
+            port = config.server.port,
+            "auto-detected proxy server PID"
+        );
         excluded_pids.push(proxy_pid);
     } else {
         warn!(

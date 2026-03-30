@@ -1,5 +1,5 @@
 import * as tls from "node:tls";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import type { Socket } from "node:net";
 import type { CertManager } from "./cert-manager.js";
 import type { SecretResolver } from "../secrets/resolver.js";
@@ -29,7 +29,30 @@ export interface MitmDeps {
   tunnelMode?: boolean;
   /** Upstream connection pool (optional — falls back to per-request connections) */
   connectionPool?: ConnectionPool;
+  /** Emit structured latency logs for MITM sessions/requests. */
+  latencyLoggingEnabled?: boolean;
+  /** Connection ID from the tunnel protocol (if this originated from the agent). */
+  tunnelConnId?: number;
+  /** Timestamp captured when the tunnel server received NEW_CONNECTION. */
+  tunnelAcceptedAtNs?: bigint;
+  /** Disable Nagle's algorithm on outbound upstream sockets. */
+  tcpNoDelay?: boolean;
 }
+
+interface ForwardMetrics {
+  poolReused: boolean | null;
+  poolRetryCount: number;
+  upstreamConnectMs: number;
+  responseHeaderMs: number | null;
+  responseStreamMs: number | null;
+  totalMs: number;
+  errorStage?: "connect" | "request_body" | "response_headers" | "response_body";
+}
+
+const FIXED_RESPONSE_CHUNK_SIZE = 16 * 1024;
+
+const nowNs = (): bigint => process.hrtime.bigint();
+const nsToMs = (durationNs: bigint): number => Number(durationNs) / 1_000_000;
 
 export async function handleMitm(
   clientSocket: Socket,
@@ -39,9 +62,13 @@ export async function handleMitm(
   deps: MitmDeps,
 ): Promise<void> {
   const { certManager, resolver, secretsConfig, auditLogger, logger } = deps;
+  const target = `${targetHost}:${targetPort}`;
+  const sessionStartNs = nowNs();
+  const certStartNs = sessionStartNs;
 
   // Generate certificate for this hostname
-  const { cert, key, ocspResponse } = certManager.getCertificate(targetHost);
+  const { cert, key, ocspResponse, fromCache, keySource } = certManager.getCertificate(targetHost);
+  const certReadyNs = nowNs();
 
   // In tunnel mode the client (agent) already started TLS — no CONNECT was sent.
   if (!deps.tunnelMode) {
@@ -67,17 +94,49 @@ export async function handleMitm(
     server: ocspEmitter,
   } as any);
 
+  tlsServer.once("secure", () => {
+    if (!deps.latencyLoggingEnabled) return;
+
+    const secureAtNs = nowNs();
+    logger.info(
+      {
+        machineId,
+        connId: deps.tunnelConnId,
+        target,
+        tunnelMode: deps.tunnelMode ?? false,
+        certMs: nsToMs(certReadyNs - certStartNs),
+        certFromCache: fromCache,
+        certKeySource: keySource,
+        tlsHandshakeMs: nsToMs(secureAtNs - certReadyNs),
+        sessionSetupMs: nsToMs(secureAtNs - sessionStartNs),
+        tunnelAcceptToTlsReadyMs: deps.tunnelAcceptedAtNs
+          ? nsToMs(secureAtNs - deps.tunnelAcceptedAtNs)
+          : undefined,
+      },
+      "MITM connection timing",
+    );
+  });
+
   tlsServer.on("error", (err) => {
-    logger.warn({ err, target: `${targetHost}:${targetPort}` }, "TLS server socket error");
+    logger.warn({ err, target, machineId, connId: deps.tunnelConnId }, "TLS server socket error");
     if (!clientSocket.destroyed) clientSocket.destroy();
   });
 
   // Process HTTP requests on the decrypted stream
   try {
     let keepAlive = true;
+    let requestSeq = 0;
+
     while (keepAlive) {
+      const requestStartNs = nowNs();
       const parsed = await parseHttpHeaders(tlsServer);
+      const parseDoneNs = nowNs();
       if (!parsed) break; // Connection closed
+
+      requestSeq++;
+      const requestId = deps.tunnelConnId !== undefined
+        ? `${machineId}:${deps.tunnelConnId}:${requestSeq}`
+        : `${machineId}:${targetHost}:${targetPort}:${requestSeq}`;
 
       keepAlive = isKeepAlive(parsed.httpVersion, parsed.headers);
 
@@ -86,6 +145,7 @@ export async function handleMitm(
       delete parsed.headers["proxy-connection"];
 
       // Inject secrets into headers
+      const injectionStartNs = nowNs();
       const { injectedHeaders, injections } = await injectSecrets(
         targetHost,
         parsed.headers,
@@ -93,6 +153,7 @@ export async function handleMitm(
         resolver,
         logger,
       );
+      const injectionDoneNs = nowNs();
 
       // Audit log
       const injectedNames = injections
@@ -103,15 +164,13 @@ export async function handleMitm(
         timestamp: new Date().toISOString(),
         machineId,
         method: parsed.method,
-        target: `${targetHost}:${targetPort}`,
+        target,
         injectedSecrets: injectedNames,
         action: injectedNames.length > 0 ? "injected" : "passthrough",
       };
-      logger.debug(
-        { target: `${targetHost}:${targetPort}`, method: parsed.method, injectedSecrets: injectedNames, machineId },
-        "MITM request processed",
-      );
+      const auditStartNs = nowNs();
       auditLogger.logRequest(auditEntry);
+      const auditDoneNs = nowNs();
 
       parsed.headers = injectedHeaders;
       if (deps.connectionPool) {
@@ -123,15 +182,51 @@ export async function handleMitm(
       }
       const headerData = serializeHttpHeaders(parsed);
 
-      await forwardToTarget(
-        tlsServer, targetHost, targetPort, headerData,
-        parsed.bodyInfo, parsed.reader, logger,
+      const forwardMetrics = await forwardToTarget(
+        tlsServer,
+        targetHost,
+        targetPort,
+        headerData,
+        parsed.bodyInfo,
+        parsed.reader,
+        logger,
         deps.targetTlsOptions,
         deps.connectionPool,
+        deps.tcpNoDelay,
       );
+
+      const requestDoneNs = nowNs();
+      const timingFields = {
+        machineId,
+        connId: deps.tunnelConnId,
+        requestId,
+        target,
+        tunnelMode: deps.tunnelMode ?? false,
+        method: parsed.method,
+        path: parsed.path,
+        keepAlive,
+        injectedSecrets: injectedNames,
+        parseMs: nsToMs(parseDoneNs - requestStartNs),
+        secretResolveMs: nsToMs(injectionDoneNs - injectionStartNs),
+        auditMs: nsToMs(auditDoneNs - auditStartNs),
+        upstreamPoolReused: forwardMetrics.poolReused,
+        upstreamPoolRetryCount: forwardMetrics.poolRetryCount,
+        upstreamConnectMs: forwardMetrics.upstreamConnectMs,
+        upstreamResponseHeaderMs: forwardMetrics.responseHeaderMs,
+        upstreamResponseStreamMs: forwardMetrics.responseStreamMs,
+        upstreamTotalMs: forwardMetrics.totalMs,
+        totalMs: nsToMs(requestDoneNs - requestStartNs),
+        errorStage: forwardMetrics.errorStage,
+      };
+
+      if (deps.latencyLoggingEnabled) {
+        logger.info(timingFields, "MITM request timing");
+      } else {
+        logger.debug(timingFields, "MITM request processed");
+      }
     }
   } catch (err) {
-    logger.warn({ err, target: `${targetHost}:${targetPort}` }, "MITM session error");
+    logger.warn({ err, target, machineId, connId: deps.tunnelConnId }, "MITM session error");
   } finally {
     // Use end() instead of destroy() so that any queued response data
     // (from forwardToTarget's clientTls.write) is flushed before the
@@ -161,28 +256,45 @@ async function forwardToTarget(
   logger: Logger,
   extraTlsOptions?: tls.ConnectionOptions,
   pool?: ConnectionPool,
-): Promise<void> {
+  tcpNoDelay: boolean = true,
+): Promise<ForwardMetrics> {
   if (!pool) {
     // Legacy path: no pool, use Connection: close and pipe until end
     return forwardToTargetLegacy(
-      clientTls, targetHost, targetPort, headerData,
-      bodyInfo, reader, logger, extraTlsOptions,
+      clientTls,
+      targetHost,
+      targetPort,
+      headerData,
+      bodyInfo,
+      reader,
+      logger,
+      extraTlsOptions,
+      tcpNoDelay,
     );
   }
 
-  let targetSocket: tls.TLSSocket;
-  let isRetry = false;
+  const overallStartNs = nowNs();
+  const metrics: ForwardMetrics = {
+    poolReused: null,
+    poolRetryCount: 0,
+    upstreamConnectMs: 0,
+    responseHeaderMs: null,
+    responseStreamMs: null,
+    totalMs: 0,
+  };
+
+  let targetSocket: tls.TLSSocket | null = null;
 
   const doForward = async (retrying: boolean): Promise<void> => {
     try {
-      targetSocket = await pool.acquire(targetHost, targetPort, extraTlsOptions);
+      const acquired = await pool.acquire(targetHost, targetPort, extraTlsOptions);
+      targetSocket = acquired.socket;
+      metrics.poolReused = acquired.reused;
+      metrics.upstreamConnectMs += acquired.connectTimeMs;
     } catch (err) {
+      metrics.errorStage = "connect";
       logger.warn({ err, target: `${targetHost}:${targetPort}` }, "Target connection error (MITM)");
-      if (!clientTls.destroyed) {
-        clientTls.write(
-          "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 15\r\nConnection: close\r\n\r\n502 Bad Gateway",
-        );
-      }
+      await writeBadGateway(clientTls);
       return;
     }
 
@@ -193,6 +305,7 @@ async function forwardToTarget(
     try {
       await pipeBody(reader, bodyInfo, targetSocket);
     } catch (err) {
+      metrics.errorStage = "request_body";
       logger.debug({ err, target: `${targetHost}:${targetPort}` }, "Error piping request body");
       if (!targetSocket.destroyed) targetSocket.destroy();
       return;
@@ -202,25 +315,25 @@ async function forwardToTarget(
     try {
       const respReader = new SocketReader(targetSocket);
       const HEADER_END = Buffer.from("\r\n\r\n");
+      const headerStartNs = nowNs();
       const respHeaderBuf = await respReader.readUntil(HEADER_END);
+      metrics.responseHeaderMs = nsToMs(nowNs() - headerStartNs);
 
       if (!respHeaderBuf) {
         respReader.detach();
         if (!targetSocket.destroyed) targetSocket.destroy();
         // Stale pooled connection — retry once with a fresh one
         if (!retrying) {
+          metrics.poolRetryCount += 1;
           return doForward(true);
         }
-        if (!clientTls.destroyed) {
-          clientTls.write(
-            "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 15\r\nConnection: close\r\n\r\n502 Bad Gateway",
-          );
-        }
+        metrics.errorStage = "response_headers";
+        await writeBadGateway(clientTls);
         return;
       }
 
       // Write response headers to client
-      clientTls.write(respHeaderBuf);
+      await writeChunk(clientTls, respHeaderBuf);
 
       // Parse response headers to determine body framing
       const respHeaderStr = respHeaderBuf.toString("utf-8");
@@ -240,6 +353,7 @@ async function forwardToTarget(
       const transferEncoding = respHeaders["transfer-encoding"];
       const contentLength = respHeaders["content-length"];
 
+      const streamStartNs = nowNs();
       if (transferEncoding?.toLowerCase().includes("chunked")) {
         // Stream chunked body
         await streamChunkedResponse(respReader, clientTls);
@@ -250,27 +364,31 @@ async function forwardToTarget(
         }
       }
       // else: no body (e.g. 204, 304, HEAD response)
+      metrics.responseStreamMs = nsToMs(nowNs() - streamStartNs);
 
       respReader.detach();
 
       // Release back to pool if possible
       if (canReuse && !targetSocket.destroyed && targetSocket.writable) {
         pool.release(targetHost, targetPort, targetSocket);
-      } else {
-        if (!targetSocket.destroyed) targetSocket.destroy();
+      } else if (!targetSocket.destroyed) {
+        targetSocket.destroy();
       }
     } catch (err) {
+      metrics.errorStage = metrics.responseHeaderMs === null ? "response_headers" : "response_body";
       logger.debug({ err, target: `${targetHost}:${targetPort}` }, "Error reading target response");
-      if (!targetSocket!.destroyed) targetSocket!.destroy();
-      // If we haven't written anything useful to the client, send 502
-      if (!clientTls.destroyed) {
-        // We may have partially written — the client side will see a broken response.
-        // Not much we can do at this point.
+      if (targetSocket && !targetSocket.destroyed) {
+        targetSocket.destroy();
       }
+      // We may have partially written a response to the client already. At this
+      // point the best we can do is tear down the upstream socket and let the
+      // client observe the truncated/broken response.
     }
   };
 
   await doForward(false);
+  metrics.totalMs = nsToMs(nowNs() - overallStartNs);
+  return metrics;
 }
 
 /**
@@ -286,32 +404,56 @@ function forwardToTargetLegacy(
   reader: SocketReader,
   logger: Logger,
   extraTlsOptions?: tls.ConnectionOptions,
-): Promise<void> {
+  tcpNoDelay: boolean = true,
+): Promise<ForwardMetrics> {
+  const overallStartNs = nowNs();
+  const metrics: ForwardMetrics = {
+    poolReused: null,
+    poolRetryCount: 0,
+    upstreamConnectMs: 0,
+    responseHeaderMs: null,
+    responseStreamMs: null,
+    totalMs: 0,
+  };
+
   return new Promise((resolve) => {
-    const targetSocket = tls.connect(
-      {
-        host: targetHost,
-        port: targetPort,
-        servername: targetHost,
-        ...extraTlsOptions,
-      },
-      async () => {
-        targetSocket.write(headerData);
+    const connectStartNs = nowNs();
+    const targetSocket = tls.connect({
+      host: targetHost,
+      port: targetPort,
+      servername: targetHost,
+      ...extraTlsOptions,
+    });
 
-        try {
-          await pipeBody(reader, bodyInfo, targetSocket);
-        } catch (err) {
-          logger.debug({ err, target: `${targetHost}:${targetPort}` }, "Error piping request body");
-          if (!targetSocket.destroyed) targetSocket.destroy();
-          resolve();
-          return;
-        }
+    if (tcpNoDelay) {
+      targetSocket.setNoDelay(true);
+    }
 
-        targetSocket.pipe(clientTls, { end: false });
-      },
-    );
+    const onSecureConnect = async () => {
+      metrics.upstreamConnectMs = nsToMs(nowNs() - connectStartNs);
+      targetSocket.write(headerData);
+
+      try {
+        await pipeBody(reader, bodyInfo, targetSocket);
+      } catch (err) {
+        metrics.errorStage = "request_body";
+        cleanup();
+        logger.debug({ err, target: `${targetHost}:${targetPort}` }, "Error piping request body");
+        if (!targetSocket.destroyed) targetSocket.destroy();
+        metrics.totalMs = nsToMs(nowNs() - overallStartNs);
+        resolve(metrics);
+        return;
+      }
+
+      const streamStartNs = nowNs();
+      targetSocket.pipe(clientTls, { end: false });
+      targetSocket.once("end", () => {
+        metrics.responseStreamMs = nsToMs(nowNs() - streamStartNs);
+      });
+    };
 
     const cleanup = () => {
+      targetSocket.removeListener("secureConnect", onSecureConnect);
       targetSocket.removeListener("end", onEnd);
       targetSocket.removeListener("error", onTargetError);
       clientTls.removeListener("error", onClientError);
@@ -319,25 +461,27 @@ function forwardToTargetLegacy(
 
     const onEnd = () => {
       cleanup();
-      resolve();
+      metrics.totalMs = nsToMs(nowNs() - overallStartNs);
+      resolve(metrics);
     };
 
-    const onTargetError = (err: Error) => {
+    const onTargetError = async (err: Error) => {
       cleanup();
+      metrics.errorStage = metrics.upstreamConnectMs === 0 ? "connect" : "response_body";
       logger.warn({ err, target: `${targetHost}:${targetPort}` }, "Target connection error (MITM)");
-      if (!clientTls.destroyed) {
-        const errorResponse = `HTTP/1.1 502 Bad Gateway\r\nContent-Length: 15\r\nConnection: close\r\n\r\n502 Bad Gateway`;
-        clientTls.write(errorResponse);
-      }
-      resolve();
+      await writeBadGateway(clientTls);
+      metrics.totalMs = nsToMs(nowNs() - overallStartNs);
+      resolve(metrics);
     };
 
     const onClientError = () => {
       cleanup();
       if (!targetSocket.destroyed) targetSocket.destroy();
-      resolve();
+      metrics.totalMs = nsToMs(nowNs() - overallStartNs);
+      resolve(metrics);
     };
 
+    targetSocket.once("secureConnect", onSecureConnect);
     targetSocket.on("end", onEnd);
     targetSocket.on("error", onTargetError);
     clientTls.on("error", onClientError);
@@ -359,23 +503,23 @@ async function streamChunkedResponse(
     const chunkSize = parseInt(sizeLine.trim(), 16);
 
     // Forward the chunk size line
-    dest.write(`${sizeLine}\r\n`);
+    await writeChunk(dest, `${sizeLine}\r\n`);
 
     if (isNaN(chunkSize) || chunkSize === 0) {
       // Terminal chunk — read and forward the trailing CRLF
-      const trailer = await reader.readLine();
-      dest.write("\r\n");
+      await reader.readLine();
+      await writeChunk(dest, "\r\n");
       break;
     }
 
     // Read and forward chunk data
     const chunkData = await reader.readExact(chunkSize);
     if (chunkData) {
-      dest.write(chunkData);
+      await writeChunk(dest, chunkData);
     }
     // Read trailing CRLF after chunk data
     await reader.readLine();
-    dest.write("\r\n");
+    await writeChunk(dest, "\r\n");
   }
 }
 
@@ -387,10 +531,29 @@ async function streamFixedResponse(
   dest: tls.TLSSocket,
   length: number,
 ): Promise<void> {
-  // readExact handles the reader's internal buffer correctly — it drains
-  // any already-buffered bytes first, then awaits from the socket.
-  const data = await reader.readExact(length);
-  if (data) {
-    dest.write(data);
+  let remaining = length;
+
+  while (remaining > 0) {
+    const chunk = await reader.readSome(Math.min(FIXED_RESPONSE_CHUNK_SIZE, remaining));
+    if (!chunk) {
+      break;
+    }
+
+    remaining -= chunk.length;
+    await writeChunk(dest, chunk);
   }
+}
+
+async function writeBadGateway(dest: tls.TLSSocket): Promise<void> {
+  if (dest.destroyed) return;
+  await writeChunk(
+    dest,
+    "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 15\r\nConnection: close\r\n\r\n502 Bad Gateway",
+  );
+}
+
+async function writeChunk(dest: tls.TLSSocket, chunk: string | Buffer): Promise<void> {
+  if (dest.destroyed) return;
+  if (dest.write(chunk)) return;
+  await once(dest, "drain");
 }

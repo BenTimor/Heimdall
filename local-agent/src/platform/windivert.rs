@@ -25,8 +25,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use tracing::{debug, error, info, trace, warn};
-use windivert::prelude::*;
 use windivert::layer;
+use windivert::prelude::*;
 
 /// Embedded WinDivert64.sys driver binary (extracted next to exe at runtime).
 const WINDIVERT_SYS: &[u8] = include_bytes!("../../resources/WinDivert64.sys");
@@ -154,8 +154,13 @@ impl WinDivertInterceptor {
         // Windows — only physically touched pages are committed.
         debug!("opening SOCKET layer handle");
         let socket_wd = on_large_stack(|| {
-            WinDivert::socket("outbound and remotePort == 443", -1, WinDivertFlags::new().set_sniff())
-        })?.map_err(|e| anyhow::anyhow!("opening WinDivert socket handle: {e}"))?;
+            WinDivert::socket(
+                "outbound and remotePort == 443",
+                -1,
+                WinDivertFlags::new().set_sniff(),
+            )
+        })?
+        .map_err(|e| anyhow::anyhow!("opening WinDivert socket handle: {e}"))?;
         debug!("SOCKET handle opened");
         let socket_handle_raw = unsafe { get_raw_handle(&socket_wd) };
 
@@ -198,10 +203,7 @@ impl WinDivertInterceptor {
         // address (not 127.0.0.1), so we match only on port. Same-host traffic
         // is "outbound" in WinDivert, so no direction constraint either.
         // Packets without a NAT table entry are passed through unchanged.
-        let inbound_filter = format!(
-            "(ip or ipv6) and tcp.SrcPort == {}",
-            transparent_port
-        );
+        let inbound_filter = format!("(ip or ipv6) and tcp.SrcPort == {}", transparent_port);
 
         info!(
             outbound_filter = %outbound_filter,
@@ -212,13 +214,13 @@ impl WinDivertInterceptor {
 
         // Open WinDivert network handles on dedicated sub-threads
         debug!("opening NETWORK outbound handle");
-        let outbound_wd = on_large_stack(move || {
-            WinDivert::network(&outbound_filter, 0, WinDivertFlags::new())
-        })?.map_err(|e| anyhow::anyhow!("opening WinDivert outbound handle: {e}"))?;
+        let outbound_wd =
+            on_large_stack(move || WinDivert::network(&outbound_filter, 0, WinDivertFlags::new()))?
+                .map_err(|e| anyhow::anyhow!("opening WinDivert outbound handle: {e}"))?;
         debug!("opening NETWORK inbound handle");
-        let inbound_wd = on_large_stack(move || {
-            WinDivert::network(&inbound_filter, 0, WinDivertFlags::new())
-        })?.map_err(|e| anyhow::anyhow!("opening WinDivert inbound handle: {e}"))?;
+        let inbound_wd =
+            on_large_stack(move || WinDivert::network(&inbound_filter, 0, WinDivertFlags::new()))?
+                .map_err(|e| anyhow::anyhow!("opening WinDivert inbound handle: {e}"))?;
         debug!("all WinDivert handles opened");
 
         // Save raw HANDLE values for cross-thread shutdown.
@@ -235,7 +237,14 @@ impl WinDivertInterceptor {
             .name("windivert-outbound".into())
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
-                run_outbound(outbound_wd, transparent_port, nat_out, running_out, pid_map_out, excluded_out);
+                run_outbound(
+                    outbound_wd,
+                    transparent_port,
+                    nat_out,
+                    running_out,
+                    pid_map_out,
+                    excluded_out,
+                );
             })
             .context("spawning WinDivert outbound thread")?;
 
@@ -317,7 +326,10 @@ impl WinDivertInterceptor {
         let remaining = self.nat_table.len();
         self.nat_table.clear();
         self.socket_pid_map.clear();
-        info!(cleared_nat_entries = remaining, "WinDivert interceptor stopped");
+        info!(
+            cleared_nat_entries = remaining,
+            "WinDivert interceptor stopped"
+        );
     }
 }
 
@@ -355,9 +367,7 @@ impl Drop for WinDivertInterceptor {
 /// with newly spawned threads. Calling WinDivertOpen on the *existing*
 /// `windivert-init` thread (which already has a 64 MB stack created by
 /// agent.rs) avoids the issue entirely.
-fn on_large_stack<T: Send + 'static>(
-    f: impl FnOnce() -> T + Send + 'static,
-) -> Result<T> {
+fn on_large_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T> {
     Ok(f())
 }
 
@@ -439,8 +449,7 @@ fn run_outbound(
                 let data = packet.data.to_mut();
 
                 // Parse IP header for diagnostics and PID check
-                let (pkt_src_ip, pkt_dst_ip, pkt_src_port, pkt_dst_port) =
-                    parse_packet_addrs(data);
+                let (pkt_src_ip, pkt_dst_ip, pkt_src_port, pkt_dst_port) = parse_packet_addrs(data);
                 let is_syn = is_syn_packet(data);
 
                 // Check PID exclusion before NAT rewriting. For SYN packets
@@ -472,7 +481,9 @@ fn run_outbound(
                     );
                 }
 
-                if let Err(reason) = rewrite_outbound(data, &port_bytes, &nat_table, orig_iface, orig_subiface) {
+                if let Err(reason) =
+                    rewrite_outbound(data, &port_bytes, &nat_table, orig_iface, orig_subiface)
+                {
                     debug!(reason, "outbound not rewritten, passing through");
                 }
 
@@ -543,7 +554,11 @@ fn should_exclude(
 
     if let Some(pid_entry) = socket_pid_map.get(&src_port) {
         if excluded_pids.contains(pid_entry.value()) {
-            trace!(src_port, pid = *pid_entry.value(), "excluding packet from excluded PID");
+            trace!(
+                src_port,
+                pid = *pid_entry.value(),
+                "excluding packet from excluded PID"
+            );
             return true;
         }
     }
@@ -781,7 +796,8 @@ fn rewrite_inbound(
         }
         6 => {
             // IPv6: client (dst) IP at [24..40]
-            let client_ip = IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&data[24..40]).unwrap()));
+            let client_ip =
+                IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&data[24..40]).unwrap()));
             let client_port = u16::from_be_bytes([data[tcp_off + 2], data[tcp_off + 3]]);
             let key = (client_ip, client_port);
 
@@ -835,7 +851,12 @@ fn is_syn_ack_packet(data: &[u8]) -> bool {
 
 /// Parse src/dst IP and ports from an IPv4 or IPv6 packet for diagnostic logging.
 fn parse_packet_addrs(data: &[u8]) -> (IpAddr, IpAddr, u16, u16) {
-    let unspec = (IpAddr::V4(Ipv4Addr::UNSPECIFIED), IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0u16, 0u16);
+    let unspec = (
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        0u16,
+        0u16,
+    );
     let tcp_off = match tcp_header_offset(data) {
         Some(off) => off,
         None => return unspec,

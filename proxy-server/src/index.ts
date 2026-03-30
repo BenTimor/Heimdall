@@ -131,7 +131,15 @@ async function main() {
   }
 
   // Create upstream connection pool for MITM forwarding
-  const connectionPool = new ConnectionPool(logger);
+  const connectionPool = config.proxy.connectionPool.enabled
+    ? new ConnectionPool(logger, {
+        idleTtlMs: config.proxy.connectionPool.idleTtlMs,
+        maxPerHost: config.proxy.connectionPool.maxPerHost,
+        maxTotal: config.proxy.connectionPool.maxTotal,
+        cleanupIntervalMs: config.proxy.connectionPool.cleanupIntervalMs,
+        tcpNoDelay: config.proxy.tcpNoDelay,
+      })
+    : null;
 
   // Create and start proxy
   const proxy = new ProxyServer({
@@ -143,7 +151,7 @@ async function main() {
     logger,
     caCert,
     caKey,
-    connectionPool,
+    connectionPool: connectionPool ?? undefined,
   });
 
   // Apply initial merged secrets config
@@ -159,6 +167,8 @@ async function main() {
       authenticator,
       proxyServer: proxy,
       logger,
+      tcpNoDelay: config.proxy.tcpNoDelay,
+      latencyLoggingEnabled: config.logging.latency.enabled,
     });
     await tunnelServer.start();
   }
@@ -196,7 +206,7 @@ async function main() {
         await tunnelServer.stop();
       }
       await proxy.stop();
-      connectionPool.close();
+      connectionPool?.close();
       if (db) {
         db.close();
       }

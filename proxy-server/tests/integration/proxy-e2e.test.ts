@@ -267,7 +267,18 @@ describe("Proxy E2E", () => {
     const logger = createMockLogger();
 
     const config: ServerConfig = {
-      proxy: { port: 0, host: "127.0.0.1" },
+      proxy: {
+        port: 0,
+        host: "127.0.0.1",
+        tcpNoDelay: true,
+        connectionPool: {
+          enabled: true,
+          idleTtlMs: 30_000,
+          maxPerHost: 6,
+          maxTotal: 256,
+          cleanupIntervalMs: 10_000,
+        },
+      },
       ca: { certFile: "", keyFile: "" },
       secrets: {
         TEST_API_KEY: {
@@ -290,7 +301,7 @@ describe("Proxy E2E", () => {
       },
       bypass: { domains: [] },
       aws: { region: "us-east-1" },
-      logging: { level: "silent", audit: { enabled: false } },
+      logging: { level: "silent", audit: { enabled: false }, latency: { enabled: false } },
     };
 
     const authenticator = new Authenticator({ enabled: config.auth.enabled }, new ConfigAuthBackend(config.auth));

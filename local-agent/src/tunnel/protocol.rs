@@ -107,8 +107,7 @@ impl Decoder for FrameCodec {
         }
 
         // Peek at the payload length without consuming bytes yet.
-        let payload_len =
-            u32::from_be_bytes([src[5], src[6], src[7], src[8]]) as usize;
+        let payload_len = u32::from_be_bytes([src[5], src[6], src[7], src[8]]) as usize;
 
         if payload_len > MAX_PAYLOAD_SIZE {
             return Err(ProtocolError::PayloadTooLarge(payload_len));

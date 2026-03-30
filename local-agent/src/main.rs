@@ -120,7 +120,13 @@ fn run() -> Result<()> {
 
     // Synchronous commands run directly — no tokio runtime, no async futures.
     match cli.command {
-        Command::Install { config: ref config_path, ref ca_cert, no_cert, no_interception, service } => {
+        Command::Install {
+            config: ref config_path,
+            ref ca_cert,
+            no_cert,
+            no_interception,
+            service,
+        } => {
             return cmd_install(config_path, ca_cert, no_cert, no_interception, service);
         }
         Command::Uninstall { force } => {
@@ -158,15 +164,23 @@ fn run_async_commands(command: Command) -> Result<()> {
 
 async fn run_async(command: Command) -> Result<()> {
     match command {
-        Command::Run { config: config_path, service_mode: _ } => {
+        Command::Run {
+            config: config_path,
+            service_mode: _,
+        } => {
             let cfg = config::AgentConfig::load(&config_path)?;
             init_tracing(&cfg.logging.level);
             Box::pin(agent::run(cfg)).await?;
         }
-        Command::Test { config: config_path } => {
+        Command::Test {
+            config: config_path,
+        } => {
             let cfg = config::AgentConfig::load(&config_path)?;
             init_tracing(&cfg.logging.level);
-            println!("Testing connection to {}:{}...", cfg.server.host, cfg.server.port);
+            println!(
+                "Testing connection to {}:{}...",
+                cfg.server.host, cfg.server.port
+            );
             match Box::pin(tunnel::client::connect_and_auth(&cfg.server, &cfg.auth)).await {
                 Ok(_) => println!("Connection and authentication successful!"),
                 Err(e) => {
@@ -345,7 +359,10 @@ fn cmd_install(
     for item in &summary {
         println!("  - {}", item);
     }
-    println!("State saved to: {}", state::InstallState::state_path().display());
+    println!(
+        "State saved to: {}",
+        state::InstallState::state_path().display()
+    );
 
     Ok(())
 }
@@ -471,7 +488,9 @@ fn cmd_service(action: ServiceCommand) -> Result<()> {
     let ops = platform::platform();
 
     match action {
-        ServiceCommand::Install { config: config_path } => {
+        ServiceCommand::Install {
+            config: config_path,
+        } => {
             let exe_path = std::env::current_exe().context("getting current exe path")?;
             print!("Installing system service... ");
             ops.install_service(&exe_path, &config_path)?;
@@ -496,16 +515,46 @@ fn cmd_service(action: ServiceCommand) -> Result<()> {
             let installed = ops.is_service_installed()?;
             let interception = ops.is_interception_active()?;
 
-            println!("Service installed: {}", if installed { "yes" } else { "no" });
-            println!("Auto-start: {}", if installed { "enabled" } else { "disabled" });
-            println!("Traffic interception: {}", if interception { "active" } else { "inactive" });
+            println!(
+                "Service installed: {}",
+                if installed { "yes" } else { "no" }
+            );
+            println!(
+                "Auto-start: {}",
+                if installed { "enabled" } else { "disabled" }
+            );
+            println!(
+                "Traffic interception: {}",
+                if interception { "active" } else { "inactive" }
+            );
 
             if let Some(state) = state::InstallState::load()? {
                 println!("Install state:");
                 println!("  Installed at: {}", state.installed_at);
-                println!("  CA cert: {}", if state.ca_cert_installed { "installed" } else { "not installed" });
-                println!("  Interception: {}", if state.interception_enabled { "enabled" } else { "disabled" });
-                println!("  Service: {}", if state.service_installed { "installed" } else { "not installed" });
+                println!(
+                    "  CA cert: {}",
+                    if state.ca_cert_installed {
+                        "installed"
+                    } else {
+                        "not installed"
+                    }
+                );
+                println!(
+                    "  Interception: {}",
+                    if state.interception_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                );
+                println!(
+                    "  Service: {}",
+                    if state.service_installed {
+                        "installed"
+                    } else {
+                        "not installed"
+                    }
+                );
             }
         }
     }
@@ -514,8 +563,7 @@ fn cmd_service(action: ServiceCommand) -> Result<()> {
 }
 
 fn init_tracing(level: &str) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(enable_ansi_support())

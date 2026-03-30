@@ -12,8 +12,8 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::tunnel::client::FramedTunnel;
 use crate::domain_filter::DomainFilter;
+use crate::tunnel::client::FramedTunnel;
 use crate::tunnel::protocol::{Frame, FrameType};
 
 /// Heartbeat interval and timeout.
@@ -38,6 +38,7 @@ pub struct Multiplexer {
     max_connections: u32,
     domain_filter: Arc<DomainFilter>,
     tunnel_alive_rx: tokio::sync::watch::Receiver<bool>,
+    machine_id: String,
 }
 
 /// Status snapshot for health reporting.
@@ -50,7 +51,13 @@ impl Multiplexer {
     /// Create a new multiplexer from a connected+authenticated tunnel.
     /// Spawns the tunnel read loop and heartbeat sender.
     /// Returns the multiplexer handle.
-    pub fn start(framed: FramedTunnel, shutdown: tokio::sync::watch::Receiver<bool>, max_connections: u32, domain_filter: Arc<DomainFilter>) -> Arc<Self> {
+    pub fn start(
+        framed: FramedTunnel,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+        max_connections: u32,
+        domain_filter: Arc<DomainFilter>,
+        machine_id: String,
+    ) -> Arc<Self> {
         let (write_half, read_half) = framed.split();
 
         let (tunnel_tx, tunnel_rx) = mpsc::channel::<Frame>(4096);
@@ -67,6 +74,7 @@ impl Multiplexer {
             max_connections,
             domain_filter: domain_filter.clone(),
             tunnel_alive_rx,
+            machine_id,
         });
 
         // Spawn tunnel writer task: drains tunnel_rx and writes to the tunnel.
@@ -87,18 +95,15 @@ impl Multiplexer {
                 read_tunnel_tx,
                 read_last_hb,
                 domain_filter,
-            ).await;
+            )
+            .await;
             let _ = read_alive_tx.send(false);
         });
 
         // Spawn heartbeat sender.
         let heartbeat_alive_tx = tunnel_alive_tx;
         tokio::spawn(async move {
-            Self::heartbeat_loop(
-                tunnel_tx,
-                last_heartbeat,
-                shutdown,
-            ).await;
+            Self::heartbeat_loop(tunnel_tx, last_heartbeat, shutdown).await;
             let _ = heartbeat_alive_tx.send(false);
         });
 
@@ -119,10 +124,15 @@ impl Multiplexer {
                 max = self.max_connections,
                 "connection limit reached, rejecting new connection"
             );
-            bail!("connection limit reached ({} active, max {})", self.connections.len(), self.max_connections);
+            bail!(
+                "connection limit reached ({} active, max {})",
+                self.connections.len(),
+                self.max_connections
+            );
         }
 
         let conn_id = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
+        let connection_started_at = Instant::now();
 
         let (local_tx, mut local_rx) = mpsc::channel::<Bytes>(512);
         self.connections.insert(conn_id, Connection { local_tx });
@@ -131,14 +141,25 @@ impl Multiplexer {
         debug!(conn_id, host = %host, port, "multiplexer: sending NEW_CONNECTION");
         let payload = format!("{}:{}", host, port);
         let frame = Frame::new(conn_id, FrameType::NewConnection, Bytes::from(payload));
+        let send_started_at = Instant::now();
         self.tunnel_tx
             .send(frame)
             .await
             .context("sending NEW_CONNECTION frame")?;
 
+        debug!(
+            machineId = %self.machine_id,
+            connId = conn_id,
+            host = %host,
+            port,
+            frameSendMs = send_started_at.elapsed().as_secs_f64() * 1000.0,
+            "multiplexer: NEW_CONNECTION sent"
+        );
+
         // Spawn bridge: local socket read -> tunnel DATA frames
         let tunnel_tx = self.tunnel_tx.clone();
         let connections = self.connections.clone();
+        let machine_id = self.machine_id.clone();
 
         tokio::spawn(async move {
             if let Err(e) = local_stream.set_nodelay(true) {
@@ -199,10 +220,16 @@ impl Multiplexer {
                 } else {
                     let _ = upload.await;
                 }
-            }).await;
+            })
+            .await;
 
-            connections.remove(&conn_id);  // no-op if tunnel_read_loop already removed
-            debug!(conn_id, "connection bridge closed");
+            connections.remove(&conn_id); // no-op if tunnel_read_loop already removed
+            debug!(
+                machineId = %machine_id,
+                connId = conn_id,
+                durationMs = connection_started_at.elapsed().as_secs_f64() * 1000.0,
+                "connection bridge closed"
+            );
         });
 
         Ok(conn_id)
@@ -305,44 +332,42 @@ impl Multiplexer {
     ) {
         while let Some(result) = stream.next().await {
             match result {
-                Ok(frame) => {
-                    match frame.frame_type {
-                        FrameType::Data => {
-                            if let Some(conn) = connections.get(&frame.conn_id) {
-                                if conn.local_tx.send(frame.payload).await.is_err() {
-                                    debug!(conn_id = frame.conn_id, "local receiver dropped");
-                                    connections.remove(&frame.conn_id);
-                                }
+                Ok(frame) => match frame.frame_type {
+                    FrameType::Data => {
+                        if let Some(conn) = connections.get(&frame.conn_id) {
+                            if conn.local_tx.send(frame.payload).await.is_err() {
+                                debug!(conn_id = frame.conn_id, "local receiver dropped");
+                                connections.remove(&frame.conn_id);
                             }
-                        }
-                        FrameType::Close => {
-                            debug!(conn_id = frame.conn_id, "received CLOSE from server");
-                            connections.remove(&frame.conn_id);
-                        }
-                        FrameType::HeartbeatAck => {
-                            let mut hb = last_heartbeat.lock().await;
-                            *hb = Instant::now();
-                        }
-                        FrameType::AuthFail => {
-                            error!("received AUTH_FAIL from server, tunnel closing");
-                            break;
-                        }
-                        FrameType::DomainListResponse => {
-                            match serde_json::from_slice::<Vec<String>>(&frame.payload) {
-                                Ok(domains) => {
-                                    debug!(count = domains.len(), "received domain list from server");
-                                    domain_filter.update(domains);
-                                }
-                                Err(e) => {
-                                    warn!(error = %e, "failed to parse domain list response");
-                                }
-                            }
-                        }
-                        other => {
-                            warn!(frame_type = ?other, "unexpected frame type from server");
                         }
                     }
-                }
+                    FrameType::Close => {
+                        debug!(conn_id = frame.conn_id, "received CLOSE from server");
+                        connections.remove(&frame.conn_id);
+                    }
+                    FrameType::HeartbeatAck => {
+                        let mut hb = last_heartbeat.lock().await;
+                        *hb = Instant::now();
+                    }
+                    FrameType::AuthFail => {
+                        error!("received AUTH_FAIL from server, tunnel closing");
+                        break;
+                    }
+                    FrameType::DomainListResponse => {
+                        match serde_json::from_slice::<Vec<String>>(&frame.payload) {
+                            Ok(domains) => {
+                                debug!(count = domains.len(), "received domain list from server");
+                                domain_filter.update(domains);
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "failed to parse domain list response");
+                            }
+                        }
+                    }
+                    other => {
+                        warn!(frame_type = ?other, "unexpected frame type from server");
+                    }
+                },
                 Err(e) => {
                     error!(error = %e, "tunnel read error");
                     break;

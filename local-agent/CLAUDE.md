@@ -140,9 +140,10 @@ Subcommands: `run`, `test`, `status`, `install`, `uninstall`, `service {install,
 - Returns `Framed<TlsStream<TcpStream>, FrameCodec>` for the multiplexer
 
 ### Multiplexer (`multiplexer.rs`)
-- `Multiplexer::start(framed, shutdown)` → splits into read/write halves, spawns 3 tasks
+- `Multiplexer::start(framed, shutdown, ..., machine_id)` → splits into read/write halves, spawns 3 tasks
 - `new_connection(tcp_stream, host, port)` → assigns conn_id, sends NEW_CONNECTION, spawns bridge
 - Bridge: local read → DATA frames (upload), channel rx → local write (download)
+- Debug logs include `machine_id` + `conn_id` around NEW_CONNECTION send and bridge close so they can be correlated with proxy-side latency logs
 - DashMap for concurrent connection tracking
 - Heartbeat: sends HEARTBEAT every 30s, errors if no ACK within 90s
 

@@ -96,7 +96,12 @@ pub async fn run_local_proxy(
 }
 
 /// Handle one CONNECT request.
-async fn handle_connect(stream: TcpStream, mux: Arc<Multiplexer>, auth_token: Option<&str>, domain_filter: &DomainFilter) -> Result<()> {
+async fn handle_connect(
+    stream: TcpStream,
+    mux: Arc<Multiplexer>,
+    auth_token: Option<&str>,
+    domain_filter: &DomainFilter,
+) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut buf_reader = BufReader::new(reader);
 
@@ -133,7 +138,10 @@ async fn handle_connect(stream: TcpStream, mux: Arc<Multiplexer>, auth_token: Op
     if let Some(expected_token) = auth_token {
         let proxy_auth = headers.iter().find_map(|h| {
             let trimmed = h.trim();
-            if trimmed.to_ascii_lowercase().starts_with("proxy-authorization:") {
+            if trimmed
+                .to_ascii_lowercase()
+                .starts_with("proxy-authorization:")
+            {
                 Some(trimmed["proxy-authorization:".len()..].trim().to_string())
             } else {
                 None

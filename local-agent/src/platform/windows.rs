@@ -1,7 +1,7 @@
+use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use anyhow::{Context, Result, bail};
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 use super::PlatformOps;
 use crate::state::RuntimeTrustState;
@@ -30,10 +30,7 @@ impl PlatformOps for WindowsPlatform {
             bail!("Administrator privileges required to enable traffic interception");
         }
 
-        info!(
-            transparent_port,
-            "Enabling WinDivert traffic interception"
-        );
+        info!(transparent_port, "Enabling WinDivert traffic interception");
 
         // Configure system proxy as primary interception method on Windows.
         // WinDivert requires a signed driver and additional setup; system proxy
@@ -68,17 +65,15 @@ impl PlatformOps for WindowsPlatform {
         // older cert missing SubjectKeyIdentifier), breaking Python/Go/Ruby TLS.
         purge_guardian_certs_from_root();
 
-        let pem_data = std::fs::read_to_string(cert_pem_path)
-            .context("reading CA certificate PEM file")?;
+        let pem_data =
+            std::fs::read_to_string(cert_pem_path).context("reading CA certificate PEM file")?;
 
         // Extract DER from PEM
-        let der = pem_to_der(&pem_data)
-            .context("decoding PEM certificate")?;
+        let der = pem_to_der(&pem_data).context("decoding PEM certificate")?;
 
         // Use certutil to add to ROOT store
         let tmp_der = std::env::temp_dir().join("guardian-ca.cer");
-        std::fs::write(&tmp_der, &der)
-            .context("writing temporary DER certificate")?;
+        std::fs::write(&tmp_der, &der).context("writing temporary DER certificate")?;
 
         let output = std::process::Command::new("certutil")
             .args(["-addstore", "ROOT"])
@@ -109,7 +104,10 @@ impl PlatformOps for WindowsPlatform {
         if removed == 0 {
             warn!("No Guardian CA certificates found in ROOT store");
         } else {
-            info!(count = removed, "Removed Guardian CA certificate(s) from ROOT store");
+            info!(
+                count = removed,
+                "Removed Guardian CA certificate(s) from ROOT store"
+            );
         }
 
         Ok(())
@@ -251,32 +249,26 @@ impl PlatformOps for WindowsPlatform {
 
     fn configure_runtime_trust(&self, ca_cert_path: &Path) -> Result<RuntimeTrustState> {
         let data_dir = guardian_data_dir();
-        std::fs::create_dir_all(&data_dir)
-            .context("creating Guardian data directory")?;
+        std::fs::create_dir_all(&data_dir).context("creating Guardian data directory")?;
 
         let bundle_path = data_dir.join("ca-bundle.pem");
         let guardian_ca_path = data_dir.join("guardian-ca.pem");
 
         // Export combined CA bundle (system CAs + Guardian CA already in store)
-        export_windows_ca_bundle(&bundle_path)
-            .context("exporting Windows CA bundle")?;
+        export_windows_ca_bundle(&bundle_path).context("exporting Windows CA bundle")?;
         info!(path = %bundle_path.display(), "Exported combined CA bundle");
 
         // Copy Guardian CA cert for NODE_EXTRA_CA_CERTS (additive, not a full bundle)
-        std::fs::copy(ca_cert_path, &guardian_ca_path)
-            .context("copying Guardian CA cert")?;
+        std::fs::copy(ca_cert_path, &guardian_ca_path).context("copying Guardian CA cert")?;
         info!(path = %guardian_ca_path.display(), "Copied Guardian CA cert");
 
         // Check existing state to handle re-install correctly
-        let existing_state = crate::state::InstallState::load()
-            .ok()
-            .flatten();
+        let existing_state = crate::state::InstallState::load().ok().flatten();
         let preserve_originals = existing_state
             .as_ref()
             .map(|s| s.runtime_trust.configured)
             .unwrap_or(false);
-        let existing_originals = existing_state
-            .map(|s| s.runtime_trust.original_env_vars);
+        let existing_originals = existing_state.map(|s| s.runtime_trust.original_env_vars);
 
         let bundle_str = bundle_path.to_string_lossy().to_string();
         let guardian_ca_str = guardian_ca_path.to_string_lossy().to_string();
@@ -301,8 +293,7 @@ impl PlatformOps for WindowsPlatform {
             };
 
             original_env_vars.insert(name.to_string(), original);
-            set_user_env_var(name, value)
-                .with_context(|| format!("setting {} env var", name))?;
+            set_user_env_var(name, value).with_context(|| format!("setting {} env var", name))?;
             info!(var = name, value = value, "Set user environment variable");
         }
 
@@ -652,8 +643,7 @@ $pems -join "`n"
     let cert_count = pem_data.matches("-----BEGIN CERTIFICATE-----").count();
     info!(cert_count, path = %output_path.display(), "Exported CA bundle");
 
-    std::fs::write(output_path, pem_data.as_bytes())
-        .context("writing CA bundle PEM file")?;
+    std::fs::write(output_path, pem_data.as_bytes()).context("writing CA bundle PEM file")?;
 
     Ok(())
 }
@@ -693,10 +683,14 @@ fn read_user_env_var(name: &str) -> Option<String> {
 fn set_user_env_var(name: &str, value: &str) -> Result<()> {
     let output = std::process::Command::new("reg")
         .args([
-            "add", r"HKCU\Environment",
-            "/v", name,
-            "/t", "REG_SZ",
-            "/d", value,
+            "add",
+            r"HKCU\Environment",
+            "/v",
+            name,
+            "/t",
+            "REG_SZ",
+            "/d",
+            value,
             "/f",
         ])
         .output()
@@ -712,18 +706,17 @@ fn set_user_env_var(name: &str, value: &str) -> Result<()> {
 /// Delete a user-level environment variable from the registry (HKCU\Environment).
 fn delete_user_env_var(name: &str) -> Result<()> {
     let output = std::process::Command::new("reg")
-        .args([
-            "delete", r"HKCU\Environment",
-            "/v", name,
-            "/f",
-        ])
+        .args(["delete", r"HKCU\Environment", "/v", name, "/f"])
         .output()
         .with_context(|| format!("running reg delete for {}", name))?;
 
     if !output.status.success() {
         // Not an error if the var doesn't exist
         let stderr = String::from_utf8_lossy(&output.stderr);
-        debug!("reg delete for {} may have failed (might not exist): {}", name, stderr);
+        debug!(
+            "reg delete for {} may have failed (might not exist): {}",
+            name, stderr
+        );
     }
     Ok(())
 }

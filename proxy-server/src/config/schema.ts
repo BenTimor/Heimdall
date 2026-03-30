@@ -23,12 +23,23 @@ export const AuthConfigSchema = z.object({
 
 export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 
+export const ConnectionPoolConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  idleTtlMs: z.number().int().min(0).default(30_000),
+  maxPerHost: z.number().int().positive().default(6),
+  maxTotal: z.number().int().positive().default(256),
+  cleanupIntervalMs: z.number().int().positive().default(10_000),
+});
+
 export const ProxyConfigSchema = z.object({
   port: z.number().int().min(1).max(65535).default(8080),
   host: z.string().default("0.0.0.0"),
   /** Public IP/hostname reachable by clients — used for OCSP responder URL in MITM certs.
    *  If not set, falls back to 127.0.0.1 (only works when proxy runs on the same machine). */
   publicHost: z.string().optional(),
+  /** Disable Nagle's algorithm on proxy-side sockets to reduce WAN latency for small frames. */
+  tcpNoDelay: z.boolean().default(true),
+  connectionPool: ConnectionPoolConfigSchema.default({}),
 });
 
 export const CaConfigSchema = z.object({
@@ -54,9 +65,14 @@ export const AuditConfigSchema = z.object({
   file: z.string().optional(),
 });
 
+export const LatencyLoggingConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+});
+
 export const LoggingConfigSchema = z.object({
   level: z.string().default("info"),
   audit: AuditConfigSchema.default({}),
+  latency: LatencyLoggingConfigSchema.default({}),
 });
 
 export const TunnelConfigSchema = z.object({

@@ -8,7 +8,7 @@ use futures_util::SinkExt;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::DigitallySignedStruct;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_stream::StreamExt;
@@ -40,7 +40,13 @@ impl ServerCertVerifier for PinningVerifier {
         now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
         // First delegate to the inner (WebPKI) verifier
-        self.inner.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)?;
+        self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        )?;
 
         // Compute SHA-256 of the end-entity certificate's DER bytes
         let mut hasher = Sha256::new();
@@ -84,24 +90,30 @@ impl ServerCertVerifier for PinningVerifier {
 /// Build a rustls ClientConfig. Uses system root certs (via webpki-roots) by default,
 /// or loads a custom CA cert if specified. If `cert_pin` is provided (format: "sha256/<base64>"),
 /// wraps the verifier with a PinningVerifier.
-fn build_tls_config(server: &ServerConfig, cert_pin: Option<String>) -> Result<Arc<rustls::ClientConfig>> {
+fn build_tls_config(
+    server: &ServerConfig,
+    cert_pin: Option<String>,
+) -> Result<Arc<rustls::ClientConfig>> {
     let mut root_store = rustls::RootCertStore::empty();
 
     if let Some(ca_path) = &server.ca_cert {
-        let pem = std::fs::read(ca_path)
-            .context(format!("reading CA cert: {}", ca_path.display()))?;
+        let pem =
+            std::fs::read(ca_path).context(format!("reading CA cert: {}", ca_path.display()))?;
         let certs = rustls_pemfile::certs(&mut &pem[..])
             .collect::<std::result::Result<Vec<_>, _>>()
             .context("parsing CA PEM")?;
         for cert in certs {
-            root_store.add(cert).context("adding CA cert to root store")?;
+            root_store
+                .add(cert)
+                .context("adding CA cert to root store")?;
         }
     } else {
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     }
 
     let config = if let Some(pin) = cert_pin {
-        let pin_hash = pin.strip_prefix("sha256/")
+        let pin_hash = pin
+            .strip_prefix("sha256/")
             .ok_or_else(|| anyhow::anyhow!("cert_pin must start with 'sha256/', got: {}", pin))?
             .to_string();
 
@@ -129,14 +141,13 @@ fn build_tls_config(server: &ServerConfig, cert_pin: Option<String>) -> Result<A
 
 /// Connect to the tunnel server over TLS and authenticate.
 /// Returns a framed tunnel connection ready for multiplexing.
-pub async fn connect_and_auth(
-    server: &ServerConfig,
-    auth: &AuthConfig,
-) -> Result<FramedTunnel> {
+pub async fn connect_and_auth(server: &ServerConfig, auth: &AuthConfig) -> Result<FramedTunnel> {
     let tls_config = build_tls_config(server, server.cert_pin.clone())?;
     let connector = TlsConnector::from(tls_config);
 
-    let server_name = server.host.parse::<std::net::IpAddr>()
+    let server_name = server
+        .host
+        .parse::<std::net::IpAddr>()
         .map(|ip| ServerName::IpAddress(ip.into()))
         .unwrap_or_else(|_| ServerName::try_from(server.host.clone()).unwrap());
 
@@ -158,7 +169,10 @@ pub async fn connect_and_auth(
     // Send AUTH frame: "machine_id:token"
     let auth_payload = Zeroizing::new(format!("{}:{}", auth.machine_id, auth.token));
     let auth_frame = Frame::new(0, FrameType::Auth, Bytes::from((*auth_payload).clone()));
-    framed.send(auth_frame).await.context("sending AUTH frame")?;
+    framed
+        .send(auth_frame)
+        .await
+        .context("sending AUTH frame")?;
 
     // Wait for AUTH_OK with timeout
     let auth_timeout = Duration::from_secs(10);

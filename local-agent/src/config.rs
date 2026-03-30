@@ -188,10 +188,9 @@ fn default_log_level() -> String {
 
 impl AgentConfig {
     pub fn load(path: &PathBuf) -> Result<Self> {
-        let contents =
-            std::fs::read_to_string(path).context(format!("reading config file: {}", path.display()))?;
-        let config: AgentConfig =
-            serde_yml::from_str(&contents).context("parsing config YAML")?;
+        let contents = std::fs::read_to_string(path)
+            .context(format!("reading config file: {}", path.display()))?;
+        let config: AgentConfig = serde_yml::from_str(&contents).context("parsing config YAML")?;
         Ok(config)
     }
 }

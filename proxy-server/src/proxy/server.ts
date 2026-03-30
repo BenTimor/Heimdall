@@ -174,6 +174,13 @@ export class ProxyServer {
     clientSocket.on("error", (err) => {
       logger.debug({ err }, "Client socket error (CONNECT)");
     });
+    if (config.proxy.tcpNoDelay) {
+      try {
+        clientSocket.setNoDelay(true);
+      } catch (err) {
+        logger.debug({ err }, "Failed to set TCP_NODELAY on CONNECT socket");
+      }
+    }
 
     // Parse target host:port from the CONNECT request
     const target = req.url;
@@ -254,6 +261,8 @@ export class ProxyServer {
         logger,
         targetTlsOptions: this.deps.targetTlsOptions,
         connectionPool: this.deps.connectionPool,
+        latencyLoggingEnabled: this.config.logging.latency.enabled,
+        tcpNoDelay: this.config.proxy.tcpNoDelay,
       };
       handleMitm(clientSocket, targetHost, targetPort, machineId, mitmDeps).catch((err) => {
         logger.error({ err, target: `${targetHost}:${targetPort}` }, "MITM handler error");
@@ -299,10 +308,11 @@ export class ProxyServer {
     targetHost: string,
     targetPort: number,
     machineId: string,
+    context?: { connId?: number; tunnelAcceptedAtNs?: bigint },
   ): void {
     const { logger, config } = this.deps;
 
-    logger.debug({ target: `${targetHost}:${targetPort}`, machineId }, "Tunnel connection");
+    logger.debug({ target: `${targetHost}:${targetPort}`, machineId, connId: context?.connId }, "Tunnel connection");
 
     // VirtualSocket extends Duplex, not net.Socket — TLSSocket wrapping a Duplex
     // does NOT auto-forward error events.  Register a handler so errors during
@@ -336,6 +346,10 @@ export class ProxyServer {
         targetTlsOptions: this.deps.targetTlsOptions,
         tunnelMode: true,
         connectionPool: this.deps.connectionPool,
+        latencyLoggingEnabled: this.config.logging.latency.enabled,
+        tunnelConnId: context?.connId,
+        tunnelAcceptedAtNs: context?.tunnelAcceptedAtNs,
+        tcpNoDelay: this.config.proxy.tcpNoDelay,
       };
       handleMitm(socket as import("node:net").Socket, targetHost, targetPort, machineId, mitmDeps).catch((err) => {
         logger.error({ err, target: `${targetHost}:${targetPort}` }, "Tunnel MITM handler error");

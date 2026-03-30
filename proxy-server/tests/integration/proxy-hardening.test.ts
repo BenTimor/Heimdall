@@ -190,7 +190,18 @@ describe("Proxy Hardening", () => {
     });
 
     const config: ServerConfig = {
-      proxy: { port: 0, host: "127.0.0.1" },
+      proxy: {
+        port: 0,
+        host: "127.0.0.1",
+        tcpNoDelay: true,
+        connectionPool: {
+          enabled: true,
+          idleTtlMs: 30_000,
+          maxPerHost: 6,
+          maxTotal: 256,
+          cleanupIntervalMs: 10_000,
+        },
+      },
       ca: { certFile: "", keyFile: "" },
       secrets: {
         TEST_API_KEY: { provider: "env", path: "TEST_API_KEY", allowedDomains: ["127.0.0.1"] },
@@ -199,7 +210,7 @@ describe("Proxy Hardening", () => {
       auth: { enabled: true, clients: [{ machineId: "test-machine", token: "test-token-123" }] },
       bypass: { domains: [] },
       aws: { region: "us-east-1" },
-      logging: { level: "silent", audit: { enabled: false } },
+      logging: { level: "silent", audit: { enabled: false }, latency: { enabled: false } },
     };
 
     const authenticator = new Authenticator({ enabled: config.auth.enabled }, new ConfigAuthBackend(config.auth));
@@ -254,6 +265,102 @@ describe("Proxy Hardening", () => {
     expect(result.httpStatus).toBe(200);
     const body = JSON.parse(result.body);
     expect(body.bodyLength).toBe(10_000);
+  });
+
+  it("should stream fixed-length responses before the full upstream body arrives", async () => {
+    const delayedTarget = await createMockHttpsServer((_req, res) => {
+      const firstChunk = "hello";
+      const secondChunk = "-world";
+      const fullBody = `${firstChunk}${secondChunk}`;
+
+      res.writeHead(200, {
+        "Content-Type": "text/plain",
+        "Content-Length": Buffer.byteLength(fullBody).toString(),
+      });
+      res.write(firstChunk);
+      setTimeout(() => {
+        res.end(secondChunk);
+      }, 200);
+    });
+
+    try {
+      const result = await new Promise<{ statusCode: number; body: string; firstBodyMs: number; totalMs: number }>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("streaming timeout")), 8000);
+        const sock = net.connect(proxyPort, "127.0.0.1", () => {
+          const auth = Buffer.from(AUTH).toString("base64");
+          sock.write(
+            `CONNECT 127.0.0.1:${delayedTarget.port} HTTP/1.1\r\nHost: 127.0.0.1:${delayedTarget.port}\r\nProxy-Authorization: Basic ${auth}\r\n\r\n`,
+          );
+        });
+
+        let connectBuf = "";
+        let phase = "connect" as "connect" | "tls";
+
+        sock.on("data", (chunk) => {
+          if (phase !== "connect") return;
+          connectBuf += chunk.toString();
+          if (!connectBuf.includes("\r\n\r\n")) return;
+
+          const connectStatus = parseInt(connectBuf.split(" ")[1], 10);
+          if (connectStatus !== 200) {
+            clearTimeout(timer);
+            reject(new Error(`CONNECT failed with ${connectStatus}`));
+            sock.destroy();
+            return;
+          }
+
+          phase = "tls";
+          const tlsSock = tls.connect({ socket: sock, servername: "127.0.0.1", rejectUnauthorized: false }, () => {
+            const sentAt = Date.now();
+            let dataBuf = Buffer.alloc(0);
+            let firstBodyMs: number | null = null;
+
+            tlsSock.on("data", (data: Buffer) => {
+              dataBuf = Buffer.concat([dataBuf, data]);
+              const headerIdx = dataBuf.indexOf("\r\n\r\n");
+              if (headerIdx !== -1 && dataBuf.length > headerIdx + 4 && firstBodyMs === null) {
+                firstBodyMs = Date.now() - sentAt;
+              }
+            });
+
+            tlsSock.on("end", () => {
+              clearTimeout(timer);
+              const parsed = parseHttpResponse(dataBuf.toString());
+              resolve({
+                statusCode: parsed.statusCode,
+                body: parsed.body,
+                firstBodyMs: firstBodyMs ?? (Date.now() - sentAt),
+                totalMs: Date.now() - sentAt,
+              });
+            });
+
+            tlsSock.on("error", (err) => {
+              clearTimeout(timer);
+              reject(err);
+            });
+
+            tlsSock.write(
+              "GET /streamed HTTP/1.1\r\n" +
+              "Host: 127.0.0.1\r\n" +
+              "Authorization: Bearer __TEST_API_KEY__\r\n" +
+              "Connection: close\r\n\r\n",
+            );
+          });
+        });
+
+        sock.on("error", (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+      });
+
+      expect(result.statusCode).toBe(200);
+      expect(result.body).toBe("hello-world");
+      expect(result.firstBodyMs).toBeLessThan(150);
+      expect(result.totalMs).toBeGreaterThanOrEqual(180);
+    } finally {
+      delayedTarget.server.close();
+    }
   });
 
   it("should handle 5 concurrent requests", async () => {

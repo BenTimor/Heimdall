@@ -4,21 +4,47 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import { generateOcspResponse } from "./ocsp-response.js";
 
+interface CachedCertificate {
+  cert: string;
+  key: string;
+  ocspResponse: Buffer;
+}
+
+interface LeafKeyPairPem {
+  publicKeyPem: string;
+  privateKeyPem: string;
+}
+
+export interface CertificateResult extends CachedCertificate {
+  fromCache: boolean;
+  keySource: "cache" | "prebuilt" | "sync-generated";
+}
+
 export class CertManager {
   private caCert: forge.pki.Certificate;
   private caKey: forge.pki.rsa.PrivateKey;
-  private cache: Map<string, { cert: string; key: string; ocspResponse: Buffer }>;
+  private cache: Map<string, CachedCertificate>;
   private maxCacheSize: number;
 
   private caKeyId: string;
   private ocspUrl: string | undefined;
+  private warmKeyPairPoolSize: number;
+  private keyPairPool: LeafKeyPairPem[] = [];
+  private pendingKeyPairBuilds = 0;
 
-  constructor(caCertPem: string, caKeyPem: string, ocspUrl?: string, maxCacheSize: number = 10_000) {
+  constructor(
+    caCertPem: string,
+    caKeyPem: string,
+    ocspUrl?: string,
+    maxCacheSize: number = 10_000,
+    warmKeyPairPoolSize: number = 4,
+  ) {
     this.caCert = forge.pki.certificateFromPem(caCertPem);
     this.caKey = forge.pki.privateKeyFromPem(caKeyPem);
     this.cache = new Map();
     this.maxCacheSize = maxCacheSize;
     this.ocspUrl = ocspUrl;
+    this.warmKeyPairPoolSize = Math.max(0, warmKeyPairPoolSize);
 
     // Pre-compute the CA's subject key identifier (raw binary) for use in
     // leaf cert authorityKeyIdentifier extensions.  Forge v1.3.3 doesn't
@@ -30,27 +56,26 @@ export class CertManager {
       : forge.pki.getPublicKeyFingerprint(this.caCert.publicKey, {
           md: forge.md.sha1.create(),
         }).getBytes();
+
+    this.fillKeyPairPool();
   }
 
-  getCertificate(hostname: string): { cert: string; key: string; ocspResponse: Buffer } {
+  getCertificate(hostname: string): CertificateResult {
     const cached = this.cache.get(hostname);
     if (cached) {
       // Move to end of Map iteration order (most recently used)
       this.cache.delete(hostname);
       this.cache.set(hostname, cached);
-      return cached;
+      return {
+        ...cached,
+        fromCache: true,
+        keySource: "cache",
+      };
     }
 
-    // Use native crypto for RSA key generation (C++ — 5-10x faster than
-    // node-forge's pure-JS implementation), then convert PEM keys back to
-    // forge objects for certificate construction.
-    const { publicKey: pubPem, privateKey: privPem } = crypto.generateKeyPairSync("rsa", {
-      modulusLength: 2048,
-      publicKeyEncoding: { type: "spki", format: "pem" },
-      privateKeyEncoding: { type: "pkcs8", format: "pem" },
-    });
-    const publicKey = forge.pki.publicKeyFromPem(pubPem);
-    const privateKey = forge.pki.privateKeyFromPem(privPem);
+    const { publicKeyPem, privateKeyPem, keySource } = this.getLeafKeyPair();
+    const publicKey = forge.pki.publicKeyFromPem(publicKeyPem);
+    const privateKey = forge.pki.privateKeyFromPem(privateKeyPem);
 
     const cert = forge.pki.createCertificate();
 
@@ -139,7 +164,7 @@ export class CertManager {
 
     const ocspResponse = generateOcspResponse(this.caCert, this.caKey, cert);
 
-    const result = {
+    const result: CachedCertificate = {
       cert: forge.pki.certificateToPem(cert),
       key: forge.pki.privateKeyToPem(privateKey),
       ocspResponse,
@@ -158,7 +183,11 @@ export class CertManager {
     }
 
     this.cache.set(hostname, result);
-    return result;
+    return {
+      ...result,
+      fromCache: false,
+      keySource,
+    };
   }
 
   clearCache(): void {
@@ -168,6 +197,56 @@ export class CertManager {
   get cacheSize(): number {
     return this.cache.size;
   }
+
+  private getLeafKeyPair(): LeafKeyPairPem & { keySource: "prebuilt" | "sync-generated" } {
+    const pooled = this.keyPairPool.pop();
+    if (pooled) {
+      this.fillKeyPairPool();
+      return {
+        ...pooled,
+        keySource: "prebuilt",
+      };
+    }
+
+    // Fallback to synchronous generation when the warm pool is empty.
+    const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+
+    return {
+      publicKeyPem: publicKey,
+      privateKeyPem: privateKey,
+      keySource: "sync-generated",
+    };
+  }
+
+  private fillKeyPairPool(): void {
+    while (this.keyPairPool.length + this.pendingKeyPairBuilds < this.warmKeyPairPoolSize) {
+      this.pendingKeyPairBuilds++;
+      crypto.generateKeyPair(
+        "rsa",
+        {
+          modulusLength: 2048,
+          publicKeyEncoding: { type: "spki", format: "pem" },
+          privateKeyEncoding: { type: "pkcs8", format: "pem" },
+        },
+        (err, publicKey, privateKey) => {
+          this.pendingKeyPairBuilds--;
+
+          if (!err) {
+            this.keyPairPool.push({
+              publicKeyPem: publicKey as string,
+              privateKeyPem: privateKey as string,
+            });
+          }
+
+          this.fillKeyPairPool();
+        },
+      );
+    }
+  }
 }
 
 export function loadCertManager(
@@ -175,8 +254,9 @@ export function loadCertManager(
   keyFile: string,
   ocspUrl?: string,
   maxCacheSize?: number,
+  warmKeyPairPoolSize?: number,
 ): CertManager {
   const caCertPem = fs.readFileSync(certFile, "utf-8");
   const caKeyPem = fs.readFileSync(keyFile, "utf-8");
-  return new CertManager(caCertPem, caKeyPem, ocspUrl, maxCacheSize);
+  return new CertManager(caCertPem, caKeyPem, ocspUrl, maxCacheSize, warmKeyPairPoolSize);
 }

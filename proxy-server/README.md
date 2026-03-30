@@ -161,7 +161,7 @@ Quick smoke test:
 pnpm test
 ```
 
-All 157 tests run locally with no external dependencies.
+All 165 tests run locally with no external dependencies.
 
 ## Configuration Reference
 
@@ -170,6 +170,12 @@ All 157 tests run locally with no external dependencies.
 |-------|---------|-------------|
 | `port` | `8080` | Proxy listen port |
 | `host` | `0.0.0.0` | Proxy bind address |
+| `tcpNoDelay` | `true` | Disable Nagle's algorithm on proxy-side sockets |
+| `connectionPool.enabled` | `true` | Reuse upstream TLS connections |
+| `connectionPool.idleTtlMs` | `30000` | Max idle time before a pooled upstream connection is evicted |
+| `connectionPool.maxPerHost` | `6` | Max pooled upstream connections per host:port |
+| `connectionPool.maxTotal` | `256` | Max pooled upstream connections across all hosts |
+| `connectionPool.cleanupIntervalMs` | `10000` | Idle pool cleanup interval |
 
 ### `ca`
 | Field | Default | Description |
@@ -227,6 +233,7 @@ Only initialized if any secret uses `provider: "aws"`.
 | `level` | `info` | Log level (trace/debug/info/warn/error/fatal/silent) |
 | `audit.enabled` | `true` | Enable JSONL audit logging |
 | `audit.file` | — | Audit log file path (e.g., `logs/audit.jsonl`) |
+| `latency.enabled` | `false` | Emit structured per-connection / per-request MITM latency logs |
 
 ### `panel` (optional)
 | Field | Default | Description |

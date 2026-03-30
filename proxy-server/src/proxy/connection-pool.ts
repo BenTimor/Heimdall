@@ -6,6 +6,12 @@ interface PooledConnection {
   lastUsed: number;
 }
 
+export interface AcquiredConnection {
+  socket: tls.TLSSocket;
+  reused: boolean;
+  connectTimeMs: number;
+}
+
 export interface ConnectionPoolOptions {
   /** Max idle time in ms before a connection is evicted (default 30000) */
   idleTtlMs?: number;
@@ -15,6 +21,8 @@ export interface ConnectionPoolOptions {
   maxTotal?: number;
   /** Cleanup interval in ms (default 10000) */
   cleanupIntervalMs?: number;
+  /** Disable Nagle's algorithm on outbound upstream sockets (default true) */
+  tcpNoDelay?: boolean;
 }
 
 /**
@@ -29,11 +37,13 @@ export class ConnectionPool {
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private totalCount = 0;
   private closed = false;
+  private tcpNoDelay: boolean;
 
   constructor(private logger?: Logger, opts?: ConnectionPoolOptions) {
     this.idleTtlMs = opts?.idleTtlMs ?? 30_000;
     this.maxPerHost = opts?.maxPerHost ?? 6;
     this.maxTotal = opts?.maxTotal ?? 256;
+    this.tcpNoDelay = opts?.tcpNoDelay ?? true;
 
     const cleanupMs = opts?.cleanupIntervalMs ?? 10_000;
     this.cleanupTimer = setInterval(() => this.evictExpired(), cleanupMs);
@@ -53,7 +63,7 @@ export class ConnectionPool {
     host: string,
     port: number,
     extraTlsOptions?: tls.ConnectionOptions,
-  ): Promise<tls.TLSSocket> {
+  ): Promise<AcquiredConnection> {
     if (this.closed) {
       return this.createNew(host, port, extraTlsOptions);
     }
@@ -73,7 +83,11 @@ export class ConnectionPool {
       // Check that socket is still alive
       if (!entry.socket.destroyed && entry.socket.writable) {
         this.logger?.debug({ host, port }, "Reusing pooled connection");
-        return Promise.resolve(entry.socket);
+        return Promise.resolve({
+          socket: entry.socket,
+          reused: true,
+          connectTimeMs: 0,
+        });
       }
       // Socket was already dead — skip it
       if (!entry.socket.destroyed) entry.socket.destroy();
@@ -163,22 +177,41 @@ export class ConnectionPool {
     host: string,
     port: number,
     extraTlsOptions?: tls.ConnectionOptions,
-  ): Promise<tls.TLSSocket> {
+  ): Promise<AcquiredConnection> {
     return new Promise((resolve, reject) => {
-      const socket = tls.connect(
-        {
-          host,
-          port,
-          servername: host,
-          ...extraTlsOptions,
-        },
-        () => {
-          resolve(socket);
-        },
-      );
-      socket.on("error", (err) => {
-        reject(err);
+      const startedAt = process.hrtime.bigint();
+      const socket = tls.connect({
+        host,
+        port,
+        servername: host,
+        ...extraTlsOptions,
       });
+
+      if (this.tcpNoDelay) {
+        socket.setNoDelay(true);
+      }
+
+      const onSecureConnect = () => {
+        cleanup();
+        resolve({
+          socket,
+          reused: false,
+          connectTimeMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
+        });
+      };
+
+      const onError = (err: Error) => {
+        cleanup();
+        reject(err);
+      };
+
+      const cleanup = () => {
+        socket.removeListener("secureConnect", onSecureConnect);
+        socket.removeListener("error", onError);
+      };
+
+      socket.once("secureConnect", onSecureConnect);
+      socket.once("error", onError);
     });
   }
 

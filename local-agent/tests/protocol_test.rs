@@ -35,11 +35,11 @@ fn cross_lang_auth_frame() {
 
     let expected: Vec<u8> = vec![
         0x00, 0x00, 0x00, 0x00, // conn_id = 0
-        0x04,                   // frame_type = Auth
+        0x04, // frame_type = Auth
         0x00, 0x00, 0x00, 0x11, // payload_length = 17
         // "machine1:token123"
-        0x6d, 0x61, 0x63, 0x68, 0x69, 0x6e, 0x65, 0x31,
-        0x3a, 0x74, 0x6f, 0x6b, 0x65, 0x6e, 0x31, 0x32, 0x33,
+        0x6d, 0x61, 0x63, 0x68, 0x69, 0x6e, 0x65, 0x31, 0x3a, 0x74, 0x6f, 0x6b, 0x65, 0x6e, 0x31,
+        0x32, 0x33,
     ];
     assert_eq!(&buf[..], &expected[..]);
 }
@@ -51,7 +51,7 @@ fn cross_lang_data_frame() {
 
     let expected: Vec<u8> = vec![
         0x00, 0x00, 0x00, 0x2a, // conn_id = 42
-        0x02,                   // frame_type = Data
+        0x02, // frame_type = Data
         0x00, 0x00, 0x00, 0x05, // payload_length = 5
         // "Hello"
         0x48, 0x65, 0x6c, 0x6c, 0x6f,
@@ -66,7 +66,7 @@ fn cross_lang_heartbeat_frame() {
 
     let expected: Vec<u8> = vec![
         0x00, 0x00, 0x00, 0x00, // conn_id = 0
-        0x07,                   // frame_type = Heartbeat
+        0x07, // frame_type = Heartbeat
         0x00, 0x00, 0x00, 0x00, // payload_length = 0
     ];
     assert_eq!(&buf[..], &expected[..]);
@@ -79,9 +79,8 @@ fn cross_lang_heartbeat_frame() {
 #[test]
 fn cross_lang_decode_auth_from_hex() {
     let raw: Vec<u8> = vec![
-        0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x11,
-        0x6d, 0x61, 0x63, 0x68, 0x69, 0x6e, 0x65, 0x31,
-        0x3a, 0x74, 0x6f, 0x6b, 0x65, 0x6e, 0x31, 0x32, 0x33,
+        0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x11, 0x6d, 0x61, 0x63, 0x68, 0x69, 0x6e,
+        0x65, 0x31, 0x3a, 0x74, 0x6f, 0x6b, 0x65, 0x6e, 0x31, 0x32, 0x33,
     ];
     let frames = decode_all(BytesMut::from(&raw[..]));
     assert_eq!(frames.len(), 1);
@@ -93,8 +92,7 @@ fn cross_lang_decode_auth_from_hex() {
 #[test]
 fn cross_lang_decode_data_from_hex() {
     let raw: Vec<u8> = vec![
-        0x00, 0x00, 0x00, 0x2a, 0x02, 0x00, 0x00, 0x00, 0x05,
-        0x48, 0x65, 0x6c, 0x6c, 0x6f,
+        0x00, 0x00, 0x00, 0x2a, 0x02, 0x00, 0x00, 0x00, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f,
     ];
     let frames = decode_all(BytesMut::from(&raw[..]));
     assert_eq!(frames.len(), 1);
@@ -105,9 +103,7 @@ fn cross_lang_decode_data_from_hex() {
 
 #[test]
 fn cross_lang_decode_heartbeat_from_hex() {
-    let raw: Vec<u8> = vec![
-        0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00,
-    ];
+    let raw: Vec<u8> = vec![0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00];
     let frames = decode_all(BytesMut::from(&raw[..]));
     assert_eq!(frames.len(), 1);
     assert_eq!(frames[0].conn_id, 0);
@@ -121,7 +117,11 @@ fn cross_lang_decode_heartbeat_from_hex() {
 
 #[test]
 fn roundtrip_new_connection() {
-    let frame = Frame::new(1, FrameType::NewConnection, Bytes::from_static(b"api.openai.com:443"));
+    let frame = Frame::new(
+        1,
+        FrameType::NewConnection,
+        Bytes::from_static(b"api.openai.com:443"),
+    );
     let buf = encode(frame.clone());
     let decoded = decode_all(buf);
     assert_eq!(decoded, vec![frame]);
@@ -312,10 +312,10 @@ fn decode_rejects_oversized_payload_length() {
     // Craft a raw frame with payload_length = MAX_PAYLOAD_SIZE + 1
     let bad_len = (MAX_PAYLOAD_SIZE as u32) + 1;
     let mut raw = BytesMut::new();
-    raw.put_u32(1);                // conn_id
-    raw.put_u8(0x02);             // Data
-    raw.put_u32(bad_len);         // payload_length (too big)
-    // Don't need actual payload bytes — decoder should reject at header check.
+    raw.put_u32(1); // conn_id
+    raw.put_u8(0x02); // Data
+    raw.put_u32(bad_len); // payload_length (too big)
+                          // Don't need actual payload bytes — decoder should reject at header check.
 
     let mut codec = FrameCodec::new();
     let result = codec.decode(&mut raw);
@@ -329,9 +329,9 @@ fn decode_rejects_oversized_payload_length() {
 #[test]
 fn decode_rejects_unknown_frame_type() {
     let mut raw = BytesMut::new();
-    raw.put_u32(0);    // conn_id
-    raw.put_u8(0xFF);  // unknown type
-    raw.put_u32(0);    // payload_length = 0
+    raw.put_u32(0); // conn_id
+    raw.put_u8(0xFF); // unknown type
+    raw.put_u32(0); // payload_length = 0
 
     let mut codec = FrameCodec::new();
     let result = codec.decode(&mut raw);
@@ -398,7 +398,7 @@ fn cross_lang_domain_list_request_frame() {
 
     let expected: Vec<u8> = vec![
         0x00, 0x00, 0x00, 0x00, // conn_id = 0
-        0x09,                   // frame_type = DomainListRequest
+        0x09, // frame_type = DomainListRequest
         0x00, 0x00, 0x00, 0x00, // payload_length = 0
     ];
     assert_eq!(&buf[..], &expected[..]);
@@ -412,7 +412,7 @@ fn cross_lang_domain_list_response_frame() {
 
     let mut expected = vec![
         0x00, 0x00, 0x00, 0x00, // conn_id = 0
-        0x0a,                   // frame_type = DomainListResponse
+        0x0a, // frame_type = DomainListResponse
         0x00, 0x00, 0x00, 0x12, // payload_length = 18
     ];
     expected.extend_from_slice(payload_str.as_bytes());
@@ -421,9 +421,7 @@ fn cross_lang_domain_list_response_frame() {
 
 #[test]
 fn cross_lang_decode_domain_list_request_from_hex() {
-    let raw: Vec<u8> = vec![
-        0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00,
-    ];
+    let raw: Vec<u8> = vec![0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00];
     let frames = decode_all(BytesMut::from(&raw[..]));
     assert_eq!(frames.len(), 1);
     assert_eq!(frames[0].conn_id, 0);
@@ -434,9 +432,7 @@ fn cross_lang_decode_domain_list_request_from_hex() {
 #[test]
 fn cross_lang_decode_domain_list_response_from_hex() {
     let payload_str = r#"["api.openai.com"]"#;
-    let mut raw: Vec<u8> = vec![
-        0x00, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x12,
-    ];
+    let mut raw: Vec<u8> = vec![0x00, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x12];
     raw.extend_from_slice(payload_str.as_bytes());
     let frames = decode_all(BytesMut::from(&raw[..]));
     assert_eq!(frames.len(), 1);

@@ -1,6 +1,5 @@
 import * as tls from "node:tls";
 import * as fs from "node:fs";
-import type { Socket } from "node:net";
 import type { TunnelConfig } from "../config/schema.js";
 import type { Logger } from "../utils/logger.js";
 import { Authenticator } from "../auth/authenticator.js";
@@ -13,6 +12,10 @@ export interface TunnelServerDeps {
   authenticator: Authenticator;
   proxyServer: ProxyServer;
   logger: Logger;
+  /** Disable Nagle's algorithm on accepted tunnel sockets. */
+  tcpNoDelay?: boolean;
+  /** Emit structured tunnel timing logs for NEW_CONNECTION handling. */
+  latencyLoggingEnabled?: boolean;
   /** Override TLS options for testing (e.g. provide cert/key directly). */
   tlsOptions?: tls.TlsOptions;
 }
@@ -112,8 +115,16 @@ export class TunnelServer {
     return this.sessions.size;
   }
 
-  private handleConnection(socket: Socket): void {
+  private handleConnection(socket: tls.TLSSocket): void {
     const { logger } = this.deps;
+
+    if (this.deps.tcpNoDelay ?? true) {
+      try {
+        socket.setNoDelay(true);
+      } catch (err) {
+        logger.debug({ err }, "Failed to set TCP_NODELAY on tunnel socket");
+      }
+    }
     const decoder = new FrameDecoder();
     let machineId: string | null = null;
     let authTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -173,7 +184,7 @@ export class TunnelServer {
     });
   }
 
-  private handleAuth(socket: Socket, frame: Frame): string | null {
+  private handleAuth(socket: tls.TLSSocket, frame: Frame): string | null {
     const { authenticator, logger } = this.deps;
 
     // Payload format: "machineId:token"
@@ -288,16 +299,31 @@ export class TunnelServer {
       return;
     }
 
+    const acceptedAtNs = process.hrtime.bigint();
     const vs = new VirtualSocket(frame.connId, session.socket);
     session.activeConnections.set(frame.connId, vs);
 
-    logger.debug(
-      { connId: frame.connId, target: `${targetHost}:${targetPort}`, machineId: session.machineId },
-      "New tunnel connection",
-    );
+    if (this.deps.latencyLoggingEnabled) {
+      logger.info(
+        {
+          connId: frame.connId,
+          target: `${targetHost}:${targetPort}`,
+          machineId: session.machineId,
+        },
+        "Tunnel NEW_CONNECTION received",
+      );
+    } else {
+      logger.debug(
+        { connId: frame.connId, target: `${targetHost}:${targetPort}`, machineId: session.machineId },
+        "New tunnel connection",
+      );
+    }
 
     // Route through the proxy's tunnel handler
-    proxyServer.handleTunnelConnection(vs, targetHost, targetPort, session.machineId);
+    proxyServer.handleTunnelConnection(vs, targetHost, targetPort, session.machineId, {
+      connId: frame.connId,
+      tunnelAcceptedAtNs: acceptedAtNs,
+    });
   }
 
   private checkHeartbeats(): void {

@@ -98,7 +98,7 @@ fn build_client_hello_no_extensions() -> Vec<u8> {
     body.extend_from_slice(&[0x00, 0x2f]); // one cipher suite
     body.push(0x01); // compression methods length = 1
     body.push(0x00); // null compression
-    // NO extensions length or extensions data
+                     // NO extensions length or extensions data
 
     let body_len = body.len();
 

@@ -10,7 +10,7 @@ Secret-injecting HTTPS CONNECT proxy. Clients set `HTTPS_PROXY=http://machineId:
 pnpm install          # install deps
 pnpm run build        # tsup → dist/
 pnpm run dev          # tsx src/index.ts (hot reload)
-pnpm test             # vitest run (all 164 tests)
+pnpm test             # vitest run (all 165 tests)
 pnpm test:watch       # vitest in watch mode
 pnpm run lint         # tsc --noEmit
 pnpm run generate-ca  # create certs/ca.crt + ca.key
@@ -116,6 +116,11 @@ tests/
 ### Config (Zod)
 All config is validated through `ServerConfigSchema` in `src/config/schema.ts`. YAML config file path: CLI arg → `GUARDIAN_CONFIG` env → `config/server-config.yaml`.
 
+`proxy` now also carries latency/performance knobs:
+- `proxy.tcpNoDelay` — disables Nagle's algorithm on proxy-side sockets (defaults to `true`)
+- `proxy.connectionPool.*` — enables/tunes upstream TLS keep-alive reuse
+- `logging.latency.enabled` — emits structured per-connection / per-request timing logs for MITM and tunnel ingress
+
 Optional `tunnel` config enables the tunnel server (`TunnelConfigSchema`): port, host, TLS cert/key, heartbeat intervals.
 
 Optional `panel` config enables the admin panel (`PanelConfigSchema`): port, host, dbPath, defaultAdminPassword, sessionTtlHours, encryptionKeyFile.
@@ -129,8 +134,10 @@ Cross-language compatible — hardcoded hex fixtures verified in both Node.js an
 
 ### Tunnel Server (`tunnel-server.ts`)
 - Accepts TLS connections on separate port (uses real server cert, not the MITM CA)
+- Sets `TCP_NODELAY` on accepted tunnel sockets when `proxy.tcpNoDelay` is enabled
 - AUTH frame with "machineId:token" → validated via existing Authenticator
 - Dispatches frames: NEW_CONNECTION creates VirtualSocket → routes to `ProxyServer.handleTunnelConnection()`
+- When `logging.latency.enabled` is on, logs `machineId` + `connId` for NEW_CONNECTION timing correlation with the agent/proxy MITM logs
 - VirtualSocket extends Duplex: writes become DATA frames, DATA frames become readable data
 - Heartbeat checker disconnects stale agents after timeout
 - DOMAIN_LIST_REQUEST → calls `ProxyServer.getSecretDomains()` → responds with DOMAIN_LIST_RESPONSE (JSON array of domain patterns)
@@ -147,10 +154,12 @@ When `tunnelMode: true` in MitmDeps or PassthroughOptions:
 4. Domain match → `resolver.resolve(provider, path, field?)` → cache-through → replace
 
 ### HTTP Parser (`http-parser.ts`)
-Custom `SocketReader` class with internal buffer and async read helpers (`readUntil`, `readExact`, `readLine`). Handles Content-Length and chunked transfer encoding. The parser detaches from the socket after reading so MITM can reuse it for keep-alive loops.
+Custom `SocketReader` class with internal buffer and async read helpers (`readUntil`, `readExact`, `readSome`, `readLine`). Handles Content-Length and chunked transfer encoding. The parser detaches from the socket after reading so MITM can reuse it for keep-alive loops.
 
 ### MITM (`mitm.ts`)
-Forces `Connection: close` on forwarded requests so the target closes the connection after responding. This simplifies response reading (wait for `end` event). The `forwardToTarget` function buffers the full response before writing to the client TLS socket.
+- With an upstream `ConnectionPool`, forwarded requests use `Connection: keep-alive`; without a pool they fall back to `Connection: close`
+- Fixed-length upstream responses are streamed incrementally back to the client instead of being fully buffered first
+- When `logging.latency.enabled` is on, MITM logs connection timing (cert cache/generation, TLS handshake) and per-request timing (parse, secret resolution, audit, upstream pool hit/miss, connect, response headers, response streaming, total)
 
 ### Admin Panel (`panel/`)
 - Fastify server on separate port (default 9090), opt-in via `panel.enabled: true`
@@ -171,6 +180,7 @@ Forces `Connection: close` on forwarded requests so the target closes the connec
 - **Tunnel E2E tests**: Mock tunnel client speaking binary protocol → inject → verify
 - Tests use `targetTlsOptions: { rejectUnauthorized: false }` since mock targets have self-signed certs
 - Test response parsers handle chunked transfer encoding
+- `proxy-hardening.test.ts` includes a delayed fixed-length response case to ensure MITM streams the body before the upstream response fully completes
 
 ## Conventions
 
@@ -183,10 +193,12 @@ Forces `Connection: close` on forwarded requests so the target closes the connec
 
 ## Known Decisions
 
-- **Connection: close forced**: MITM forces close on all forwarded requests for simplicity
+- **Keep-alive upstream by default**: MITM prefers pooled upstream TLS connections; when pooling is disabled it falls back to `Connection: close`
+- **Pre-generated leaf key pool**: `CertManager` keeps a small async warm pool of RSA keypairs so first-use cert issuance can often skip synchronous key generation
+- **Latency logs are opt-in**: `logging.latency.enabled` emits structured timing logs without changing the trust model or wire protocol
 - **Auth defaults to enabled**: `auth.enabled` defaults to `true` in schema
 - **No plain HTTP proxy**: Server returns 405 for non-CONNECT requests
-- **Audit logger uses sync writes**: `fs.writeSync` for JSONL audit entries to avoid data loss
+- **Audit logger uses buffered writes**: JSONL/SQLite audit entries are buffered and periodically flushed to reduce request-path overhead
 - **Tunnel server uses separate TLS cert**: Not the MITM CA — agent verifies server identity
 
 ## Docker

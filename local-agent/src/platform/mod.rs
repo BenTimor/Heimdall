@@ -1,13 +1,13 @@
-use std::path::Path;
-use anyhow::Result;
 use crate::state::RuntimeTrustState;
+use anyhow::Result;
+use std::path::Path;
 
-#[cfg(target_os = "windows")]
-pub mod windows;
-#[cfg(target_os = "windows")]
-pub mod windivert;
 #[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(target_os = "windows")]
+pub mod windivert;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 /// Platform-specific operations for traffic interception, certificate management,
 /// and service management.
