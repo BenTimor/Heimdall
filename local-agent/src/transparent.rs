@@ -129,18 +129,37 @@ async fn handle_transparent(
     domain_filter: &DomainFilter,
 ) -> Result<()> {
     // Peek at the ClientHello without consuming it from the kernel buffer.
-    let mut buf = [0u8; 4096];
-    let n = stream
-        .peek(&mut buf)
-        .await
-        .context("peeking at ClientHello")?;
+    // TCP may deliver the ClientHello across multiple segments, so when we
+    // get a partial read we retry until the full record arrives.
+    let mut buf = [0u8; 8192];
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let hostname = loop {
+        let n = stream
+            .peek(&mut buf)
+            .await
+            .context("peeking at ClientHello")?;
 
-    if n == 0 {
-        anyhow::bail!("connection closed before sending data");
-    }
+        if n == 0 {
+            anyhow::bail!("connection closed before sending data");
+        }
 
-    let hostname = sni::extract_sni(&buf[..n])
-        .map_err(|e| anyhow::anyhow!("SNI extraction failed: {}", e))?;
+        match sni::extract_sni(&buf[..n]) {
+            Ok(hostname) => break hostname,
+            Err(sni::SniError::BufferTooShort { needed, .. }) if needed <= buf.len() => {
+                if tokio::time::Instant::now() >= deadline {
+                    anyhow::bail!(
+                        "timeout waiting for complete ClientHello (have {} bytes, need {})",
+                        n,
+                        needed
+                    );
+                }
+                // Rest of the ClientHello is still in-flight — brief yield then retry
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                continue;
+            }
+            Err(e) => return Err(anyhow::anyhow!("SNI extraction failed: {}", e)),
+        }
+    };
 
     if !is_valid_hostname(&hostname) {
         anyhow::bail!("invalid SNI hostname: {}", hostname);

@@ -6,13 +6,12 @@
 //! regardless of proxy settings.
 //!
 //! Uses the WinDivert SOCKET layer in sniff mode for PID-based exclusion:
-//! connections from excluded processes (e.g., the proxy server) pass through
-//! without NAT. Sniff mode passively observes socket events without blocking
-//! the originating connect() call, avoiding system-wide latency on every new
-//! connection. The trade-off is a small race window where a SYN could reach
-//! the NETWORK handler before the PID mapping is recorded; in practice this
-//! is negligible because the SOCKET event fires before the TCP handshake
-//! completes.
+//! connections from excluded processes (e.g., the agent itself, the proxy server)
+//! pass through without NAT. Sniff mode passively observes socket events without
+//! blocking the originating connect() call, avoiding system-wide latency.
+//! To close the race window where a SYN reaches the NETWORK handler before the
+//! SOCKET tracker records the PID, the outbound handler retries the PID lookup
+//! briefly on SYN packets whose source port is not yet in the map.
 //!
 //! Requires administrator privileges and the WinDivert driver.
 
@@ -375,9 +374,8 @@ unsafe fn get_raw_handle<L: WinDivertLayerTrait>(wd: &WinDivert<L>) -> isize {
 ///
 /// The SOCKET handle is opened with the `sniff` flag, so `recv()` passively
 /// observes socket events without blocking the originating `connect()` call.
-/// This avoids adding latency to every outbound connection system-wide, at the
-/// cost of a small race window where a SYN could arrive at the NETWORK handler
-/// before the PID mapping is recorded. In practice the race is negligible.
+/// The outbound handler compensates for the sniff-mode race by retrying the
+/// PID lookup on SYN packets whose source port is not yet in the map.
 fn run_socket_tracker(
     wd: WinDivert<layer::SocketLayer>,
     pid_map: Arc<DashMap<u16, u32>>,
@@ -443,9 +441,12 @@ fn run_outbound(
                 // Parse IP header for diagnostics and PID check
                 let (pkt_src_ip, pkt_dst_ip, pkt_src_port, pkt_dst_port) =
                     parse_packet_addrs(data);
+                let is_syn = is_syn_packet(data);
 
-                // Check PID exclusion before NAT rewriting.
-                if should_exclude(data, &socket_pid_map, &excluded_pids) {
+                // Check PID exclusion before NAT rewriting. For SYN packets
+                // whose source port isn't in the PID map yet (SOCKET sniff
+                // race), retry briefly so the tracker thread can catch up.
+                if should_exclude_with_retry(data, &socket_pid_map, &excluded_pids, is_syn) {
                     let _ = packet.recalculate_checksums(Default::default());
                     let _ = wd.send(&packet);
                     continue;
@@ -454,7 +455,6 @@ fn run_outbound(
                 // Only intercept SYN (new connections) or packets with existing
                 // NAT entries. Mid-stream packets from pre-existing connections
                 // pass through to avoid disrupting them.
-                let is_syn = is_syn_packet(data);
                 if !is_syn && !nat_table.contains_key(&(pkt_src_ip, pkt_src_port)) {
                     let _ = packet.recalculate_checksums(Default::default());
                     let _ = wd.send(&packet);
@@ -547,6 +547,60 @@ fn should_exclude(
             return true;
         }
     }
+    false
+}
+
+/// Like [`should_exclude`] but retries briefly for SYN packets whose source port
+/// is not yet in the PID map — closing the SOCKET-sniff race window where a SYN
+/// reaches the NETWORK handler before the tracker thread records the PID.
+///
+/// Only SYN packets with an *unknown* source port trigger retries; non-SYN packets
+/// and SYNs whose PID is already tracked (but not excluded) return immediately.
+fn should_exclude_with_retry(
+    data: &[u8],
+    socket_pid_map: &DashMap<u16, u32>,
+    excluded_pids: &HashSet<u32>,
+    is_syn: bool,
+) -> bool {
+    // Fast path — works for the vast majority of packets.
+    if should_exclude(data, socket_pid_map, excluded_pids) {
+        return true;
+    }
+
+    // Only retry for SYN packets when there are PIDs to exclude.
+    if !is_syn || excluded_pids.is_empty() {
+        return false;
+    }
+
+    // Determine source port.
+    let tcp_off = match tcp_header_offset(data) {
+        Some(off) => off,
+        None => return false,
+    };
+    if data.len() < tcp_off + 2 {
+        return false;
+    }
+    let src_port = u16::from_be_bytes([data[tcp_off], data[tcp_off + 1]]);
+
+    // If PID is tracked but not excluded, no point retrying.
+    if socket_pid_map.contains_key(&src_port) {
+        return false;
+    }
+
+    // PID not tracked yet — SOCKET sniff race. Spin then yield.
+    for _ in 0..100 {
+        std::hint::spin_loop();
+        if let Some(pid) = socket_pid_map.get(&src_port) {
+            return excluded_pids.contains(pid.value());
+        }
+    }
+    for _ in 0..10 {
+        std::thread::yield_now();
+        if let Some(pid) = socket_pid_map.get(&src_port) {
+            return excluded_pids.contains(pid.value());
+        }
+    }
+
     false
 }
 
