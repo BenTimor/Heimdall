@@ -1,10 +1,10 @@
 # Guardian Quick Start
 
-This guide walks through the recommended first-run experience for Guardian: a fully transparent local-agent setup.
+This guide walks through the recommended first-run experience for Guardian: a fully transparent local-agent setup on a developer workstation.
 
 Use this path when you want the developer machine to work without setting `HTTPS_PROXY` per application.
 
-If you want per-process routing instead, see [Explicit Proxy Guide](explicit-proxy.md).
+If you are validating Guardian on a VPS, CI runner, or a workload that runs as `root`, prefer [Explicit Proxy Guide](explicit-proxy.md) first.
 
 ## Prerequisites
 
@@ -147,6 +147,12 @@ This step:
 - enables transparent interception
 - saves enough state for `uninstall` to reverse the changes later
 
+Linux notes:
+
+- transparent mode currently redirects outbound IPv4 traffic with `iptables`
+- root-owned client processes are excluded from interception to avoid tunnel loops
+- for VPS or server validation, use a non-root shell for transparent-mode smoke tests or prefer [Explicit Proxy Guide](explicit-proxy.md)
+
 ## 5. Start the local agent
 
 ```bash
@@ -164,11 +170,13 @@ target/release/guardian-local-agent run --config config/agent-config.yaml
 With the transparent install in place, applications should work without any per-process proxy configuration:
 
 ```bash
-curl https://api.openai.com/v1/models \
+curl -4 https://api.openai.com/v1/models \
   -H "Authorization: Bearer __OPENAI_API_KEY__"
 ```
 
 The application only sees the placeholder. The real secret is resolved and injected by the proxy server.
+
+On Linux, run this verification from a non-root shell. A `root` shell or an IPv6 egress path can bypass the current transparent redirect.
 
 ## Next Steps
 

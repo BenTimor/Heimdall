@@ -32,6 +32,7 @@ pub async fn run(config: AgentConfig) -> Result<()> {
     // This runs once at startup, not per-session.
     #[cfg(target_os = "linux")]
     if config.transparent.enabled {
+        log_linux_transparent_caveats();
         reapply_iptables_if_needed(&config);
     }
 
@@ -296,6 +297,34 @@ fn reapply_iptables_if_needed(config: &AgentConfig) {
             warn!(error = %e, "failed to load install state for iptables check");
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn log_linux_transparent_caveats() {
+    warn!(
+        "linux transparent mode currently redirects outbound IPv4 traffic with iptables; IPv6 traffic may bypass Guardian"
+    );
+
+    if linux_running_as_root() {
+        warn!(
+            "linux transparent mode excludes root-owned client processes; verify from a non-root shell or use explicit proxy mode for root/system daemons"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_running_as_root() -> bool {
+    use std::process::Command;
+
+    Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|output| {
+            let uid = String::from_utf8(output.stdout).ok()?;
+            uid.trim().parse::<u32>().ok()
+        })
+        == Some(0)
 }
 
 /// Try to start WinDivert packet interception based on config.

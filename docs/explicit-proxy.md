@@ -9,6 +9,7 @@ Use this mode when you want a narrower blast radius or when you control environm
 - wrapping a specific CLI, desktop app, or script without affecting the whole workstation
 - CI/CD pipelines where you can set env vars but cannot install system-wide interception rules
 - containers or ephemeral environments where machine-wide install steps are undesirable
+- Linux VPS or server environments where the workload runs as `root` or transparent interception is not the right fit
 - phased rollouts where you want to validate Guardian on a few commands before enabling transparent mode
 
 ## Two Variants

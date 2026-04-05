@@ -198,6 +198,36 @@ async fn run_async(command: Command) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn install_interception_port(_local_proxy_port: u16, transparent_port: u16) -> u16 {
+    transparent_port
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_interception_port(local_proxy_port: u16, _transparent_port: u16) -> u16 {
+    local_proxy_port
+}
+
+#[cfg(target_os = "linux")]
+fn install_interception_mode_label() -> &'static str {
+    "iptables redirect"
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_interception_mode_label() -> &'static str {
+    "system proxy"
+}
+
+#[cfg(target_os = "linux")]
+fn install_interception_summary() -> &'static str {
+    "Traffic interception enabled (iptables transparent redirect)"
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_interception_summary() -> &'static str {
+    "Traffic interception enabled (system proxy)"
+}
+
 /// Handle the `status` subcommand.
 async fn cmd_status(url: &str) -> Result<()> {
     let url = url.trim_end_matches('/');
@@ -301,14 +331,18 @@ fn cmd_install(
                 println!("skipped (WinDivert handles interception at runtime)");
             }
             config::InterceptionMethod::SystemProxy | config::InterceptionMethod::Auto => {
-                // System proxy points to the local CONNECT proxy (speaks HTTP CONNECT)
-                let proxy_port = cfg.local_proxy.port;
-                print!("(system proxy → port {})... ", proxy_port);
+                let interception_port =
+                    install_interception_port(cfg.local_proxy.port, cfg.transparent.port);
+                print!(
+                    "({} -> port {})... ",
+                    install_interception_mode_label(),
+                    interception_port
+                );
                 std::io::stdout().flush().ok();
-                match ops.enable_interception(proxy_port) {
+                match ops.enable_interception(interception_port) {
                     Ok(()) => {
                         install_state.interception_enabled = true;
-                        summary.push("Traffic interception enabled (system proxy)");
+                        summary.push(install_interception_summary());
                         println!("done");
                     }
                     Err(e) => {
@@ -363,6 +397,20 @@ fn cmd_install(
         "State saved to: {}",
         state::InstallState::state_path().display()
     );
+
+    #[cfg(target_os = "linux")]
+    if install_state.interception_enabled {
+        println!();
+        println!(
+            "Linux transparent-mode notes: outbound IPv4 traffic is redirected with iptables."
+        );
+        println!(
+            "Linux transparent-mode notes: root-owned client processes are excluded to avoid tunnel loops."
+        );
+        println!(
+            "Linux transparent-mode notes: verify from a non-root shell and prefer explicit proxy mode for root/system daemons."
+        );
+    }
 
     Ok(())
 }
@@ -599,5 +647,22 @@ fn enable_ansi_support() -> bool {
     #[cfg(not(windows))]
     {
         std::io::IsTerminal::is_terminal(&std::io::stderr())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::install_interception_port;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_install_redirects_to_transparent_listener_port() {
+        assert_eq!(install_interception_port(19080, 19443), 19443);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn non_linux_install_uses_local_proxy_port() {
+        assert_eq!(install_interception_port(19080, 19443), 19080);
     }
 }

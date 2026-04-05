@@ -21,7 +21,7 @@ Applications send placeholders such as `__OPENAI_API_KEY__`; Guardian intercepts
 
 ## Quick Start
 
-The recommended first run is the transparent local-agent flow:
+The recommended first run is the transparent local-agent flow on a developer workstation:
 
 1. Set up the proxy server and tunnel listener.
 2. Copy the Guardian CA certificate to the developer machine.
@@ -30,7 +30,7 @@ The recommended first run is the transparent local-agent flow:
 5. Start the agent and verify that apps work without setting `HTTPS_PROXY`.
 
 Follow [docs/quickstart.md](docs/quickstart.md) for the full transparent walkthrough.
-If you want per-process routing instead, see [docs/explicit-proxy.md](docs/explicit-proxy.md).
+If you are validating on a VPS, CI runner, or a root-owned workload, start with [docs/explicit-proxy.md](docs/explicit-proxy.md) instead.
 
 ## Local-Agent Downloads
 

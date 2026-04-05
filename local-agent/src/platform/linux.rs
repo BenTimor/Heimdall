@@ -55,6 +55,10 @@ impl PlatformOps for LinuxPlatform {
             "Enabling iptables REDIRECT for outbound TCP:443"
         );
 
+        // Remove any stale Guardian rules first so reinstalling can repair an
+        // older redirect target without accumulating duplicates.
+        let _ = remove_rules_by_comment();
+
         // Redirect outbound TCP:443 to the transparent listener port,
         // excluding traffic from the agent's own UID to avoid loops.
         run_command_check(
