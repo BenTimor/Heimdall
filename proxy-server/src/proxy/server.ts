@@ -93,7 +93,7 @@ export class ProxyServer {
     );
     if (!authResult.authenticated) {
       res.writeHead(407, {
-        "Proxy-Authenticate": 'Basic realm="Guardian Proxy"',
+        "Proxy-Authenticate": 'Basic realm="Heimdall Proxy"',
         "Content-Type": "text/plain",
       });
       res.end("Proxy authentication required");
@@ -212,7 +212,7 @@ export class ProxyServer {
     );
     if (!authResult.authenticated) {
       clientSocket.end(
-        "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"Guardian Proxy\"\r\n\r\n",
+        "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"Heimdall Proxy\"\r\n\r\n",
       );
       this.deps.auditLogger.logRequest({
         timestamp: new Date().toISOString(),

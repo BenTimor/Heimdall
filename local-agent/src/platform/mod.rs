@@ -47,7 +47,7 @@ pub trait PlatformOps {
     fn stop_service(&self) -> Result<()>;
 
     /// Configure runtime CA trust so runtimes with their own CA stores
-    /// (Python, Node.js, Ruby, Go) trust the Guardian CA certificate.
+    /// (Python, Node.js, Ruby, Go) trust the Heimdall CA certificate.
     fn configure_runtime_trust(&self, ca_cert_path: &Path) -> Result<RuntimeTrustState>;
 
     /// Remove runtime CA trust configuration, restoring original env var values.

@@ -30,7 +30,7 @@ async function main() {
   // Determine config file path: CLI arg > env > default
   const configPath =
     process.argv[2] ||
-    process.env.GUARDIAN_CONFIG ||
+    process.env.HEIMDALL_CONFIG ||
     "config/server-config.yaml";
 
   let config: ReturnType<typeof loadConfig>;
@@ -43,7 +43,7 @@ async function main() {
 
   const logger = createLogger({
     level: config.logging.level,
-    name: "guardian-proxy",
+    name: "heimdall-proxy",
   });
 
   logger.info({ configPath }, "Configuration loaded");

@@ -22,8 +22,8 @@ function generateCA(): void {
   );
 
   const attrs = [
-    { name: "commonName", value: "Guardian Proxy CA" },
-    { name: "organizationName", value: "Guardian" },
+    { name: "commonName", value: "Heimdall Proxy CA" },
+    { name: "organizationName", value: "Heimdall" },
   ];
   cert.setSubject(attrs);
   cert.setIssuer(attrs);

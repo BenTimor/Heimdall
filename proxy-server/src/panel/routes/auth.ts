@@ -48,7 +48,7 @@ export function registerAuthRoutes(
 
     const sessionId = createSession(db, admin.id, config.sessionTtlHours);
 
-    reply.setCookie("guardian_session", sessionId, {
+    reply.setCookie("heimdall_session", sessionId, {
       httpOnly: true,
       sameSite: "strict",
       path: "/panel",
@@ -62,12 +62,12 @@ export function registerAuthRoutes(
   });
 
   app.post("/panel/api/auth/logout", async (request, reply) => {
-    const sessionId = request.cookies.guardian_session;
+    const sessionId = request.cookies.heimdall_session;
     if (sessionId) {
       deleteSession(db, sessionId);
     }
 
-    reply.clearCookie("guardian_session", { path: "/panel" });
+    reply.clearCookie("heimdall_session", { path: "/panel" });
     return { ok: true };
   });
 

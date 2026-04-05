@@ -1,6 +1,6 @@
-# Guardian Deployment Guide
+# Heimdall Deployment Guide
 
-This guide focuses on running the Guardian proxy server in a team or production-like environment.
+This guide focuses on running the Heimdall proxy server in a team or production-like environment.
 
 ## Recommended Topology
 
@@ -34,7 +34,7 @@ pnpm run generate-tunnel-cert proxy.example.com
 
 Current helper scripts generate:
 
-- `certs/ca.crt` and `certs/ca.key` for Guardian's MITM CA
+- `certs/ca.crt` and `certs/ca.key` for Heimdall's MITM CA
 - `certs/tunnel.crt` and `certs/tunnel.key` for the tunnel server
 
 ## 2. Configure the server
@@ -98,11 +98,11 @@ tunnel:
 
 ## Why `proxy.publicHost` matters
 
-Guardian includes an OCSP responder URL in generated MITM leaf certificates. Set `proxy.publicHost` to the hostname or IP clients can actually reach; otherwise the responder URL falls back to `127.0.0.1`, which only makes sense for single-machine setups.
+Heimdall includes an OCSP responder URL in generated MITM leaf certificates. Set `proxy.publicHost` to the hostname or IP clients can actually reach; otherwise the responder URL falls back to `127.0.0.1`, which only makes sense for single-machine setups.
 
 ## 3. Provide secrets securely
 
-Guardian supports three secret sources:
+Heimdall supports three secret sources:
 
 - `env`: resolve from environment variables
 - `aws`: resolve from AWS Secrets Manager
@@ -110,7 +110,7 @@ Guardian supports three secret sources:
 
 Recommendations:
 
-- keep the CA private key and tunnel private key tightly scoped to the Guardian host
+- keep the CA private key and tunnel private key tightly scoped to the Heimdall host
 - avoid storing live secrets in the repo or example config files
 - use domain allow-lists for every secret
 
@@ -136,12 +136,12 @@ pnpm run dev
 The repository already contains a Dockerfile for the proxy server:
 
 ```bash
-docker build -t guardian-proxy proxy-server
+docker build -t heimdall-proxy proxy-server
 docker run --rm \
   -p 8080:8080 \
   -v "$(pwd)/proxy-server/config:/app/config" \
   -v "$(pwd)/proxy-server/certs:/app/certs" \
-  guardian-proxy config/server-config.yaml
+  heimdall-proxy config/server-config.yaml
 ```
 
 If you use the admin panel, also persist `proxy-server/data/`.
@@ -173,7 +173,7 @@ Guidance:
 
 - keep `panel.host` on `127.0.0.1` unless you have an explicit access plan
 - change the default admin password immediately
-- back up both `data/guardian.db` and `data/encryption.key`
+- back up both `data/heimdall.db` and `data/encryption.key`
 - prefer SSH port-forwarding for remote access
 
 ## 7. Backups And Persistence
@@ -185,7 +185,7 @@ Back up these files if they exist in your deployment:
 - `certs/ca.key`
 - `certs/tunnel.crt`
 - `certs/tunnel.key`
-- `data/guardian.db`
+- `data/heimdall.db`
 - `data/encryption.key`
 - audit log files such as `logs/audit.jsonl`
 
@@ -193,7 +193,7 @@ The encryption key and database must stay together if you use stored secrets.
 
 ## 8. Observability
 
-Guardian already supports:
+Heimdall already supports:
 
 - structured proxy logging
 - optional audit logs

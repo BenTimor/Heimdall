@@ -6,10 +6,10 @@ use tracing::info;
 use super::PlatformOps;
 use crate::state::RuntimeTrustState;
 
-const SERVICE_NAME: &str = "guardian-agent";
-const UNIT_FILE_PATH: &str = "/etc/systemd/system/guardian-agent.service";
-const CA_CERT_PATH: &str = "/usr/local/share/ca-certificates/guardian-proxy.crt";
-const IPTABLES_COMMENT: &str = "guardian-redirect";
+const SERVICE_NAME: &str = "heimdall-agent";
+const UNIT_FILE_PATH: &str = "/etc/systemd/system/heimdall-agent.service";
+const CA_CERT_PATH: &str = "/usr/local/share/ca-certificates/heimdall-proxy.crt";
+const IPTABLES_COMMENT: &str = "heimdall-redirect";
 const NAT_OUTPUT_LIST_ARGS: [&str; 6] = ["-t", "nat", "-L", "OUTPUT", "-n", "--line-numbers"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,12 +73,12 @@ impl PlatformOps for LinuxPlatform {
             "Enabling transparent REDIRECT rules for outbound TCP:443"
         );
 
-        // Remove any stale Guardian rules first so reinstalling can repair an
+        // Remove any stale Heimdall rules first so reinstalling can repair an
         // older redirect target without accumulating duplicates.
-        remove_all_guardian_rules()?;
+        remove_all_heimdall_rules()?;
 
         if let Err(error) = add_all_redirect_rules(&uid, transparent_port) {
-            let rollback_error = remove_all_guardian_rules().err();
+            let rollback_error = remove_all_heimdall_rules().err();
             return Err(match rollback_error {
                 Some(rollback_error) => anyhow!(
                     "failed to enable dual-stack transparent interception: {:#}; cleanup after partial failure also failed: {:#}",
@@ -95,14 +95,14 @@ impl PlatformOps for LinuxPlatform {
 
     fn disable_interception(&self) -> Result<()> {
         info!("Disabling transparent REDIRECT rules");
-        remove_all_guardian_rules()?;
+        remove_all_heimdall_rules()?;
         info!("iptables/ip6tables REDIRECT rules removed");
         Ok(())
     }
 
     fn is_interception_active(&self) -> Result<bool> {
         for table in interception_tables() {
-            if !table_has_guardian_rule(table.program)? {
+            if !table_has_heimdall_rule(table.program)? {
                 return Ok(false);
             }
         }
@@ -126,7 +126,7 @@ impl PlatformOps for LinuxPlatform {
     }
 
     fn uninstall_ca_cert(&self) -> Result<()> {
-        info!("Removing Guardian CA certificate");
+        info!("Removing Heimdall CA certificate");
 
         if Path::new(CA_CERT_PATH).exists() {
             std::fs::remove_file(CA_CERT_PATH).context("removing CA certificate file")?;
@@ -146,12 +146,12 @@ impl PlatformOps for LinuxPlatform {
         let exe = exe_path.to_string_lossy();
         let config = config_path.to_string_lossy();
 
-        info!("Installing Guardian agent as systemd service");
+        info!("Installing Heimdall agent as systemd service");
 
         let unit_contents = format!(
             "\
 [Unit]
-Description=Guardian Secret Proxy Agent
+Description=Heimdall Secret Proxy Agent
 After=network.target
 
 [Service]
@@ -170,12 +170,12 @@ WantedBy=multi-user.target
         run_command_check("systemctl", &["daemon-reload"])?;
         run_command_check("systemctl", &["enable", SERVICE_NAME])?;
 
-        info!("Guardian agent systemd service installed and enabled");
+        info!("Heimdall agent systemd service installed and enabled");
         Ok(())
     }
 
     fn uninstall_service(&self) -> Result<()> {
-        info!("Uninstalling Guardian agent systemd service");
+        info!("Uninstalling Heimdall agent systemd service");
 
         // Stop and disable (ignore errors if not running)
         let _ = run_command("systemctl", &["stop", SERVICE_NAME]);
@@ -187,7 +187,7 @@ WantedBy=multi-user.target
 
         run_command_check("systemctl", &["daemon-reload"])?;
 
-        info!("Guardian agent systemd service uninstalled");
+        info!("Heimdall agent systemd service uninstalled");
         Ok(())
     }
 
@@ -196,34 +196,34 @@ WantedBy=multi-user.target
     }
 
     fn start_service(&self) -> Result<()> {
-        info!("Starting Guardian agent service");
+        info!("Starting Heimdall agent service");
         run_command_check("systemctl", &["start", SERVICE_NAME])?;
-        info!("Guardian agent service started");
+        info!("Heimdall agent service started");
         Ok(())
     }
 
     fn stop_service(&self) -> Result<()> {
-        info!("Stopping Guardian agent service");
+        info!("Stopping Heimdall agent service");
         run_command_check("systemctl", &["stop", SERVICE_NAME])?;
-        info!("Guardian agent service stopped");
+        info!("Heimdall agent service stopped");
         Ok(())
     }
 
     fn configure_runtime_trust(&self, ca_cert_path: &Path) -> Result<RuntimeTrustState> {
-        let data_dir = guardian_data_dir_linux();
-        std::fs::create_dir_all(&data_dir).context("creating Guardian data directory")?;
+        let data_dir = heimdall_data_dir_linux();
+        std::fs::create_dir_all(&data_dir).context("creating Heimdall data directory")?;
 
-        let guardian_ca_path = data_dir.join("guardian-ca.pem");
+        let heimdall_ca_path = data_dir.join("heimdall-ca.pem");
 
-        // Copy Guardian CA cert
-        std::fs::copy(ca_cert_path, &guardian_ca_path).context("copying Guardian CA cert")?;
-        info!(path = %guardian_ca_path.display(), "Copied Guardian CA cert");
+        // Copy Heimdall CA cert
+        std::fs::copy(ca_cert_path, &heimdall_ca_path).context("copying Heimdall CA cert")?;
+        info!(path = %heimdall_ca_path.display(), "Copied Heimdall CA cert");
 
         // On Linux, update-ca-certificates handles most runtimes.
         // We only need NODE_EXTRA_CA_CERTS for Node.js.
         let env_vars = vec![(
             "NODE_EXTRA_CA_CERTS",
-            guardian_ca_path.to_string_lossy().to_string(),
+            heimdall_ca_path.to_string_lossy().to_string(),
         )];
 
         let mut original_env_vars = HashMap::new();
@@ -243,7 +243,7 @@ WantedBy=multi-user.target
         Ok(RuntimeTrustState {
             configured: true,
             ca_bundle_path: None,
-            guardian_ca_path: Some(guardian_ca_path),
+            heimdall_ca_path: Some(heimdall_ca_path),
             original_env_vars,
         })
     }
@@ -268,7 +268,7 @@ WantedBy=multi-user.target
         }
 
         // Delete cert file
-        if let Some(ref path) = state.guardian_ca_path {
+        if let Some(ref path) = state.heimdall_ca_path {
             if path.exists() {
                 std::fs::remove_file(path).ok();
             }
@@ -324,7 +324,7 @@ fn build_delete_rule_args(line_number: u32) -> Vec<String> {
     ]
 }
 
-fn parse_guardian_rule_line_numbers(stdout: &str) -> Vec<u32> {
+fn parse_heimdall_rule_line_numbers(stdout: &str) -> Vec<u32> {
     let mut line_numbers = Vec::new();
     for line in stdout.lines() {
         if !line.contains(IPTABLES_COMMENT) {
@@ -340,7 +340,7 @@ fn parse_guardian_rule_line_numbers(stdout: &str) -> Vec<u32> {
     line_numbers
 }
 
-fn list_guardian_rule_line_numbers(program: &str) -> Result<Vec<u32>> {
+fn list_heimdall_rule_line_numbers(program: &str) -> Result<Vec<u32>> {
     let output = run_command(program, &NAT_OUTPUT_LIST_ARGS)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -353,11 +353,11 @@ fn list_guardian_rule_line_numbers(program: &str) -> Result<Vec<u32>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(parse_guardian_rule_line_numbers(&stdout))
+    Ok(parse_heimdall_rule_line_numbers(&stdout))
 }
 
-fn table_has_guardian_rule(program: &str) -> Result<bool> {
-    Ok(!list_guardian_rule_line_numbers(program)?.is_empty())
+fn table_has_heimdall_rule(program: &str) -> Result<bool> {
+    Ok(!list_heimdall_rule_line_numbers(program)?.is_empty())
 }
 
 fn add_all_redirect_rules(uid: &str, transparent_port: u16) -> Result<()> {
@@ -374,20 +374,20 @@ fn add_all_redirect_rules(uid: &str, transparent_port: u16) -> Result<()> {
 }
 
 fn remove_rules_by_comment(program: &str) -> Result<()> {
-    let mut line_numbers = list_guardian_rule_line_numbers(program)?;
+    let mut line_numbers = list_heimdall_rule_line_numbers(program)?;
 
     // Delete in reverse order so line numbers stay valid.
     line_numbers.reverse();
     for num in line_numbers {
         let args = build_delete_rule_args(num);
         run_command_check_owned(program, &args)
-            .with_context(|| format!("removing Guardian redirect rule {} via {}", num, program))?;
+            .with_context(|| format!("removing Heimdall redirect rule {} via {}", num, program))?;
     }
 
     Ok(())
 }
 
-fn remove_all_guardian_rules() -> Result<()> {
+fn remove_all_heimdall_rules() -> Result<()> {
     let mut errors = Vec::new();
 
     for table in interception_tables() {
@@ -406,10 +406,10 @@ fn remove_all_guardian_rules() -> Result<()> {
     }
 }
 
-/// Get the Guardian data directory on Linux (~/.config/guardian).
-fn guardian_data_dir_linux() -> PathBuf {
+/// Get the Heimdall data directory on Linux (~/.config/heimdall).
+fn heimdall_data_dir_linux() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".config").join("guardian")
+    PathBuf::from(home).join(".config").join("heimdall")
 }
 
 /// Read a variable's value from /etc/environment.
@@ -487,7 +487,7 @@ fn remove_etc_environment_var(name: &str) -> Result<()> {
 mod tests {
     use super::{
         build_delete_rule_args, build_redirect_rule_args, interception_tables,
-        parse_guardian_rule_line_numbers,
+        parse_heimdall_rule_line_numbers,
     };
 
     #[test]
@@ -520,7 +520,7 @@ mod tests {
                 "-m",
                 "comment",
                 "--comment",
-                "guardian-redirect",
+                "heimdall-redirect",
                 "-j",
                 "REDIRECT",
                 "--to-port",
@@ -530,16 +530,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_guardian_rule_line_numbers_ignores_unrelated_rules() {
+    fn parse_heimdall_rule_line_numbers_ignores_unrelated_rules() {
         let listing = "\
 num  target     prot opt source               destination
 1    RETURN     tcp  --  anywhere             anywhere             owner UID match 0 tcp dpt:https
-2    REDIRECT   tcp  --  anywhere             anywhere             owner UID match ! 1000 /* guardian-redirect */ redir ports 19443
+2    REDIRECT   tcp  --  anywhere             anywhere             owner UID match ! 1000 /* heimdall-redirect */ redir ports 19443
 3    REDIRECT   tcp  --  anywhere             anywhere             tcp dpt:https redir ports 12345
-7    REDIRECT   tcp  --  anywhere             anywhere             owner UID match ! 1000 /* guardian-redirect */ redir ports 19443
+7    REDIRECT   tcp  --  anywhere             anywhere             owner UID match ! 1000 /* heimdall-redirect */ redir ports 19443
 ";
 
-        assert_eq!(parse_guardian_rule_line_numbers(listing), vec![2, 7]);
+        assert_eq!(parse_heimdall_rule_line_numbers(listing), vec![2, 7]);
     }
 
     #[test]

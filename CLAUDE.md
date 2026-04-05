@@ -1,4 +1,4 @@
-# Guardian
+# Heimdall
 
 This file is a compatibility pointer for tooling that still looks for `CLAUDE.md`.
 

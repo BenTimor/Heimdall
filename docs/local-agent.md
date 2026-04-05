@@ -1,6 +1,6 @@
-# Guardian Local Agent Guide
+# Heimdall Local Agent Guide
 
-The local agent is the workstation-side entry point for Guardian. It gives developers a local proxy endpoint, can intercept HTTPS transparently, and forwards approved traffic to the proxy server over an authenticated TLS tunnel.
+The local agent is the workstation-side entry point for Heimdall. It gives developers a local proxy endpoint, can intercept HTTPS transparently, and forwards approved traffic to the proxy server over an authenticated TLS tunnel.
 
 ## Installation Options
 
@@ -13,8 +13,8 @@ When your team publishes binaries, distribute them from the repository's [GitHub
 Recommended release contents:
 
 - the platform binary:
-  - `guardian-local-agent.exe` on Windows
-  - `guardian-local-agent` on Linux
+  - `heimdall-local-agent.exe` on Windows
+  - `heimdall-local-agent` on Linux
 - a sample `agent-config.yaml`
 - checksums
 - release notes describing supported operating systems
@@ -30,7 +30,7 @@ cargo build --release
 cp config/agent-config.example.yaml config/agent-config.yaml
 ```
 
-Source builds currently produce `target/release/guardian-local-agent`.
+Source builds currently produce `target/release/heimdall-local-agent`.
 
 ## Basic Configuration
 
@@ -86,13 +86,13 @@ Notes:
 ### From a release package
 
 ```bash
-./guardian-local-agent run --config ./agent-config.yaml
+./heimdall-local-agent run --config ./agent-config.yaml
 ```
 
 ### From a source build
 
 ```bash
-target/release/guardian-local-agent run --config config/agent-config.yaml
+target/release/heimdall-local-agent run --config config/agent-config.yaml
 ```
 
 Or with Cargo:
@@ -104,14 +104,14 @@ cargo run --release -- run --config config/agent-config.yaml
 ## Useful Commands
 
 ```bash
-guardian-local-agent test --config config/agent-config.yaml
-guardian-local-agent status
-guardian-local-agent install --config config/agent-config.yaml --ca-cert /path/to/ca.crt
-guardian-local-agent uninstall
-guardian-local-agent service status
+heimdall-local-agent test --config config/agent-config.yaml
+heimdall-local-agent status
+heimdall-local-agent install --config config/agent-config.yaml --ca-cert /path/to/ca.crt
+heimdall-local-agent uninstall
+heimdall-local-agent service status
 ```
 
-If your packaged release uses a shorter wrapper name such as `guardian-agent`, the subcommands remain the same.
+If your packaged release uses a shorter wrapper name such as `heimdall-agent`, the subcommands remain the same.
 
 ## Explicit Proxy Mode
 
@@ -145,17 +145,17 @@ transparent:
   method: "auto"
 ```
 
-Then install Guardian with elevated privileges:
+Then install Heimdall with elevated privileges:
 
 ```bash
-guardian-local-agent install \
+heimdall-local-agent install \
   --config config/agent-config.yaml \
   --ca-cert /path/to/ca.crt
 ```
 
 What `install` does:
 
-- installs the Guardian CA certificate into the local trust store unless `--no-cert` is used
+- installs the Heimdall CA certificate into the local trust store unless `--no-cert` is used
 - enables traffic interception unless `--no-interception` is used
 - optionally installs a service when `--service` is provided
 
@@ -173,14 +173,14 @@ What `install` does:
 
 ## Service Management
 
-Guardian can also run as a background service.
+Heimdall can also run as a background service.
 
 ```bash
-guardian-local-agent service install --config config/agent-config.yaml
-guardian-local-agent service start
-guardian-local-agent service status
-guardian-local-agent service stop
-guardian-local-agent service uninstall
+heimdall-local-agent service install --config config/agent-config.yaml
+heimdall-local-agent service start
+heimdall-local-agent service status
+heimdall-local-agent service stop
+heimdall-local-agent service uninstall
 ```
 
 For end-user release packages, document whether the installer wires this up automatically or leaves it as a manual step.
@@ -191,11 +191,11 @@ The agent exposes a health endpoint on `http://127.0.0.1:19876/health` by defaul
 
 Useful checks:
 
-- `guardian-local-agent test --config ...` verifies tunnel connection and auth
-- `guardian-local-agent status` queries the health endpoint
+- `heimdall-local-agent test --config ...` verifies tunnel connection and auth
+- `heimdall-local-agent status` queries the health endpoint
 - if traffic is not tunneling, confirm the proxy server recognizes the `machine_id`
-- if transparent mode is enabled but apps are bypassing Guardian on Linux, test from a non-root shell with both `curl -4` and `curl -6`
-- if transparent mode is enabled but apps are bypassing Guardian, confirm the chosen interception method is actually active on that OS
+- if transparent mode is enabled but apps are bypassing Heimdall on Linux, test from a non-root shell with both `curl -4` and `curl -6`
+- if transparent mode is enabled but apps are bypassing Heimdall, confirm the chosen interception method is actually active on that OS
 
 ## Release Guidance
 

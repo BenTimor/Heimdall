@@ -94,7 +94,7 @@ export const PanelConfigSchema = z.object({
   enabled: z.boolean().default(false),
   port: z.number().int().min(1).max(65535).default(9090),
   host: z.string().default("127.0.0.1"),
-  dbPath: z.string().default("data/guardian.db"),
+  dbPath: z.string().default("data/heimdall.db"),
   defaultAdminPassword: z.string().default("change-me-immediately"),
   sessionTtlHours: z.number().int().min(1).default(24),
   encryptionKeyFile: z.string().default("data/encryption.key"),

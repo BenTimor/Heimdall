@@ -1,6 +1,8 @@
-# Guardian Documentation
+# Heimdall Documentation
 
-This directory contains the operator-facing documentation for Guardian.
+This directory contains the operator-facing documentation for Heimdall.
+
+Project site: [heimdall.co.il](https://heimdall.co.il)
 
 ## Start Here
 

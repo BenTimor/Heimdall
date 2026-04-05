@@ -1,4 +1,4 @@
-/* Guardian Admin Panel — Pico-inspired minimal CSS */
+/* Heimdall Admin Panel — Pico-inspired minimal CSS */
 
 /* === Reset === */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -78,6 +78,21 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+.login-link {
+  margin-top: 0.35rem;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+.login-link a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.login-link a:hover {
+  text-decoration: underline;
+}
+
 /* === Layout === */
 .layout {
   display: flex;
@@ -96,14 +111,17 @@ body {
 }
 
 .sidebar-brand {
+  display: block;
   padding: 1.25rem 1rem;
   border-bottom: 1px solid rgba(255,255,255,0.08);
   font-size: 1.05rem;
   font-weight: 600;
   color: #fff;
   letter-spacing: -0.01em;
+  text-decoration: none;
 }
 .sidebar-brand span { opacity: 0.5; font-weight: 400; }
+.sidebar-brand:hover { color: #fff; text-decoration: none; }
 
 .sidebar-nav { padding: 0.5rem 0; flex: 1; }
 

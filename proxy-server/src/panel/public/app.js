@@ -1,4 +1,4 @@
-// Guardian Admin Panel — Vanilla JS SPA
+// Heimdall Admin Panel — Vanilla JS SPA
 // No build step, no framework, no dependencies.
 
 'use strict';
@@ -11,8 +11,9 @@ const state = {
   mustChangePassword: false,
   username: '',
   systemInfo: null,
-  theme: localStorage.getItem('guardian-theme') || 'light',
+  theme: localStorage.getItem('heimdall-theme') || 'light',
 };
+const PROJECT_URL = 'https://heimdall.co.il';
 
 // ---------------------------------------------------------------------------
 // API helper
@@ -80,7 +81,7 @@ function showToast(message, type = 'success') {
 // ---------------------------------------------------------------------------
 function applyTheme() {
   document.documentElement.setAttribute('data-theme', state.theme);
-  localStorage.setItem('guardian-theme', state.theme);
+  localStorage.setItem('heimdall-theme', state.theme);
 }
 applyTheme();
 
@@ -214,8 +215,9 @@ function renderLogin() {
   app.innerHTML = `
     <div class="login-wrapper">
       <div class="login-card">
-        <h1>Guardian</h1>
+        <h1>Heimdall</h1>
         <p class="login-subtitle">Admin Panel</p>
+        <p class="login-link"><a href="${PROJECT_URL}" target="_blank" rel="noreferrer">heimdall.co.il</a></p>
         <div id="login-error"></div>
         <form id="login-form">
           <div class="form-group">
@@ -368,7 +370,7 @@ function renderApp() {
   app.innerHTML = `
     <div class="layout">
       <nav class="sidebar">
-        <div class="sidebar-brand">Guardian <span>admin</span></div>
+        <a class="sidebar-brand" href="${PROJECT_URL}" target="_blank" rel="noreferrer">Heimdall <span>admin</span></a>
         <div class="sidebar-nav">${navHtml}</div>
         <div class="sidebar-footer">
           <button class="theme-toggle" onclick="window._toggleTheme()">${state.theme === 'light' ? 'Dark mode' : 'Light mode'}</button>

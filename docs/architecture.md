@@ -1,13 +1,13 @@
-# Guardian Architecture
+# Heimdall Architecture
 
-Guardian splits secret-aware traffic handling into a central proxy server and a lightweight local agent.
+Heimdall splits secret-aware traffic handling into a central proxy server and a lightweight local agent.
 
 ```mermaid
 flowchart LR
     App["Developer app"] --> Entry["HTTPS_PROXY or transparent redirect"]
-    Entry --> Agent["Guardian local agent"]
+    Entry --> Agent["Heimdall local agent"]
     Agent --> Tunnel["TLS tunnel"]
-    Tunnel --> Proxy["Guardian proxy server"]
+    Tunnel --> Proxy["Heimdall proxy server"]
     Proxy --> Secrets["Env / AWS / stored secrets"]
     Proxy --> Target["Target HTTPS API"]
 ```
@@ -57,7 +57,7 @@ This is useful for fast evaluation and CI smoke testing, but the tunnel-based mo
 
 ## Secret Injection Model
 
-Guardian only injects secrets server-side.
+Heimdall only injects secrets server-side.
 
 - Clients send placeholder values such as `Authorization: Bearer __OPENAI_API_KEY__`.
 - The proxy scans headers for placeholders.
@@ -79,7 +79,7 @@ The local agent and the proxy server communicate over a framed TLS tunnel.
 
 ## Authentication
 
-Guardian uses the same logical client identity for both CONNECT proxy auth and tunnel auth.
+Heimdall uses the same logical client identity for both CONNECT proxy auth and tunnel auth.
 
 - Proxy-server client record: `machineId` + `token`
 - Local-agent config: `auth.machine_id` + `auth.token`
@@ -100,7 +100,7 @@ The local agent authenticates with an `AUTH` frame. Direct proxy clients authent
   - `certs/ca.key`
   - `certs/tunnel.crt`
   - `certs/tunnel.key`
-  - `data/guardian.db`
+  - `data/heimdall.db`
   - `data/encryption.key`
 - Local-agent persistent state includes:
   - `config/agent-config.yaml`

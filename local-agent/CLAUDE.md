@@ -1,4 +1,4 @@
-# Guardian Local Agent
+# Heimdall Local Agent
 
 This file remains only as a compatibility pointer for tools that look for `CLAUDE.md`.
 

@@ -1,10 +1,10 @@
-# Guardian Local Agent Guide
+# Heimdall Local Agent Guide
 
 This file applies to `local-agent/` and overrides the repository guide where needed.
 
 ## Purpose
 
-The local agent runs on developer or workstation machines. It exposes a local CONNECT proxy, optionally intercepts HTTPS traffic transparently, and multiplexes traffic over a TLS tunnel to the Guardian proxy server.
+The local agent runs on developer or workstation machines. It exposes a local CONNECT proxy, optionally intercepts HTTPS traffic transparently, and multiplexes traffic over a TLS tunnel to the Heimdall proxy server.
 
 ## Primary Commands
 
@@ -14,7 +14,7 @@ cargo test
 cargo run -- run --config config/agent-config.yaml
 cargo run -- test --config config/agent-config.yaml
 cargo run -- status
-cargo run -- install --config config/agent-config.yaml --ca-cert /path/to/guardian-ca.crt
+cargo run -- install --config config/agent-config.yaml --ca-cert /path/to/heimdall-ca.crt
 cargo run -- uninstall
 cargo run -- service status
 ```
@@ -41,8 +41,8 @@ cargo run -- service status
 
 ## Release And Packaging Notes
 
-- Source builds currently produce `target/release/guardian-local-agent`.
-- Human-facing docs may refer to the packaged executable as the Guardian local agent, but commands and subcommands must stay aligned with the actual CLI.
+- Source builds currently produce `target/release/heimdall-local-agent`.
+- Human-facing docs may refer to the packaged executable as the Heimdall local agent, but commands and subcommands must stay aligned with the actual CLI.
 - If release artifacts change shape, update the installation and release guidance in `README.md` and `../docs/local-agent.md`.
 
 ## Special Caution

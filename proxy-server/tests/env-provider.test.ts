@@ -3,7 +3,7 @@ import { EnvProvider } from "../src/secrets/env-provider.js";
 
 describe("EnvProvider", () => {
   const provider = new EnvProvider();
-  const TEST_KEY = "GUARDIAN_TEST_SECRET_XYZ";
+  const TEST_KEY = "HEIMDALL_TEST_SECRET_XYZ";
 
   afterEach(() => {
     delete process.env[TEST_KEY];

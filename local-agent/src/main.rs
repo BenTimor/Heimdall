@@ -17,7 +17,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "guardian-agent", about = "Guardian local proxy agent")]
+#[command(name = "heimdall-agent", about = "Heimdall local proxy agent")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -46,7 +46,7 @@ enum Command {
         #[arg(short, long, default_value = "http://127.0.0.1:19876")]
         url: String,
     },
-    /// Install Guardian: set up CA cert, enable interception, optionally install service
+    /// Install Heimdall: set up CA cert, enable interception, optionally install service
     Install {
         /// Path to config YAML file
         #[arg(short, long, default_value = "config/agent-config.yaml")]
@@ -64,13 +64,13 @@ enum Command {
         #[arg(long)]
         service: bool,
     },
-    /// Uninstall Guardian: reverse all install actions
+    /// Uninstall Heimdall: reverse all install actions
     Uninstall {
         /// Force uninstall even if state file is missing
         #[arg(long)]
         force: bool,
     },
-    /// Manage the Guardian system service
+    /// Manage the Heimdall system service
     Service {
         #[command(subcommand)]
         action: ServiceCommand,
@@ -102,7 +102,7 @@ fn main() {
     const STACK_SIZE: usize = 8 * 1024 * 1024; // 8 MB
 
     let result = std::thread::Builder::new()
-        .name("guardian-main".into())
+        .name("heimdall-main".into())
         .stack_size(STACK_SIZE)
         .spawn(run)
         .expect("failed to spawn runtime thread")
@@ -436,7 +436,7 @@ fn cmd_uninstall(force: bool) -> Result<()> {
                 s.runtime_trust = state::RuntimeTrustState {
                     configured: true,
                     ca_bundle_path: None,
-                    guardian_ca_path: None,
+                    heimdall_ca_path: None,
                     original_env_vars,
                 };
                 s

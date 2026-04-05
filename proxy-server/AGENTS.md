@@ -1,10 +1,10 @@
-# Guardian Proxy Server Agent Guide
+# Heimdall Proxy Server Agent Guide
 
 This file applies to `proxy-server/` and overrides the repository guide where needed.
 
 ## Purpose
 
-The proxy server is the central Guardian service. It authenticates clients and agents, terminates HTTPS for approved domains, injects secrets, forwards requests upstream, and optionally runs the tunnel server and admin panel.
+The proxy server is the central Heimdall service. It authenticates clients and agents, terminates HTTPS for approved domains, injects secrets, forwards requests upstream, and optionally runs the tunnel server and admin panel.
 
 ## Primary Commands
 

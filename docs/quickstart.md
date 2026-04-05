@@ -1,10 +1,10 @@
-# Guardian Quick Start
+# Heimdall Quick Start
 
-This guide walks through the recommended first-run experience for Guardian: a fully transparent local-agent setup on a developer workstation.
+This guide walks through the recommended first-run experience for Heimdall: a fully transparent local-agent setup on a developer workstation.
 
 Use this path when you want the developer machine to work without setting `HTTPS_PROXY` per application.
 
-If you are validating Guardian on a VPS, CI runner, or a workload that runs as `root`, prefer [Explicit Proxy Guide](explicit-proxy.md) first.
+If you are validating Heimdall on a VPS, CI runner, or a workload that runs as `root`, prefer [Explicit Proxy Guide](explicit-proxy.md) first.
 
 ## Prerequisites
 
@@ -31,7 +31,7 @@ Update `config/server-config.yaml`:
 - set `proxy.publicHost` to the externally reachable hostname or IP of the proxy server
 - add or confirm `auth.clients` entries for each developer machine
 - enable the tunnel server
-- define the secrets you want Guardian to inject
+- define the secrets you want Heimdall to inject
 
 Example:
 
@@ -80,14 +80,14 @@ export OPENAI_API_KEY="sk-your-real-key"
 pnpm run dev
 ```
 
-## 2. Copy the Guardian CA certificate to the developer machine
+## 2. Copy the Heimdall CA certificate to the developer machine
 
-Copy `proxy-server/certs/ca.crt` from the server to the developer machine as something like `guardian-ca.crt`.
+Copy `proxy-server/certs/ca.crt` from the server to the developer machine as something like `heimdall-ca.crt`.
 
 With the current helper scripts, this certificate serves two purposes:
 
 - it lets the agent trust the tunnel server certificate
-- it is installed into the workstation trust store so apps trust Guardian's MITM certificates
+- it is installed into the workstation trust store so apps trust Heimdall's MITM certificates
 
 ## 3. Install or build the local agent
 
@@ -108,7 +108,7 @@ Edit `config/agent-config.yaml`:
 server:
   host: "proxy.example.com"
   port: 8443
-  ca_cert: "/path/to/guardian-ca.crt"
+  ca_cert: "/path/to/heimdall-ca.crt"
 
 auth:
   machine_id: "dev-machine-01"
@@ -123,27 +123,27 @@ transparent:
 
 The `machine_id` and `token` must match an entry in the proxy server's `auth.clients`.
 
-## 4. Install Guardian on the developer machine
+## 4. Install Heimdall on the developer machine
 
-Run the install step with elevated privileges so Guardian can install the CA certificate and enable transparent interception:
+Run the install step with elevated privileges so Heimdall can install the CA certificate and enable transparent interception:
 
 ```bash
-guardian-local-agent install \
+heimdall-local-agent install \
   --config ./agent-config.yaml \
-  --ca-cert /path/to/guardian-ca.crt
+  --ca-cert /path/to/heimdall-ca.crt
 ```
 
 If you built from source instead of using a packaged binary:
 
 ```bash
-target/release/guardian-local-agent install \
+target/release/heimdall-local-agent install \
   --config config/agent-config.yaml \
-  --ca-cert /path/to/guardian-ca.crt
+  --ca-cert /path/to/heimdall-ca.crt
 ```
 
 This step:
 
-- installs the Guardian CA certificate into the workstation trust store
+- installs the Heimdall CA certificate into the workstation trust store
 - enables transparent interception
 - saves enough state for `uninstall` to reverse the changes later
 
@@ -156,13 +156,13 @@ Linux notes:
 ## 5. Start the local agent
 
 ```bash
-guardian-local-agent run --config ./agent-config.yaml
+heimdall-local-agent run --config ./agent-config.yaml
 ```
 
 If you built from source instead of using a packaged binary:
 
 ```bash
-target/release/guardian-local-agent run --config config/agent-config.yaml
+target/release/heimdall-local-agent run --config config/agent-config.yaml
 ```
 
 ## 6. Verify that apps work without `HTTPS_PROXY`

@@ -23,7 +23,7 @@ describe("AuditLogger", () => {
   };
 
   it("writes a JSON line to the audit file", async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "guardian-audit-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "heimdall-audit-"));
     const auditFile = path.join(tmpDir, "audit.jsonl");
 
     const logger = new AuditLogger({ enabled: true, file: auditFile });

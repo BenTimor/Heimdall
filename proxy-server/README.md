@@ -1,6 +1,8 @@
-# Guardian Proxy Server
+# Heimdall Proxy Server
 
-The proxy server is the central Guardian service. It authenticates clients and agents, performs HTTPS MITM for approved domains, resolves secrets server-side, injects placeholders, and optionally exposes the tunnel server and admin panel.
+The proxy server is the central Heimdall service. It authenticates clients and agents, performs HTTPS MITM for approved domains, resolves secrets server-side, injects placeholders, and optionally exposes the tunnel server and admin panel.
+
+Project site: [heimdall.co.il](https://heimdall.co.il)
 
 ## Responsibilities
 
@@ -132,7 +134,7 @@ panel:
   enabled: true
   host: "127.0.0.1"
   port: 9090
-  dbPath: "data/guardian.db"
+  dbPath: "data/heimdall.db"
   defaultAdminPassword: "change-me-immediately"
   sessionTtlHours: 24
   encryptionKeyFile: "data/encryption.key"
@@ -142,18 +144,18 @@ Operational guidance:
 
 - keep it on `127.0.0.1` unless you have a deliberate access plan
 - change the default admin password immediately
-- back up both `data/guardian.db` and `data/encryption.key`
+- back up both `data/heimdall.db` and `data/encryption.key`
 - prefer SSH port-forwarding over broad network exposure
 
 ## Docker
 
 ```bash
-docker build -t guardian-proxy .
+docker build -t heimdall-proxy .
 docker run --rm \
   -p 8080:8080 \
   -v ./config:/app/config \
   -v ./certs:/app/certs \
-  guardian-proxy config/server-config.yaml
+  heimdall-proxy config/server-config.yaml
 ```
 
 Persist `data/` as well if you enable the admin panel.

@@ -1,4 +1,4 @@
-# Guardian Proxy Server
+# Heimdall Proxy Server
 
 This file remains only as a compatibility pointer for tools that look for `CLAUDE.md`.
 

@@ -7,7 +7,7 @@ export function createLogger(options?: {
   name?: string;
 }): Logger {
   const level = options?.level ?? "info";
-  const name = options?.name ?? "guardian-proxy";
+  const name = options?.name ?? "heimdall-proxy";
 
   if (process.env.NODE_ENV !== "production") {
     return pino({

@@ -87,7 +87,7 @@ export async function startPanelServer(deps: PanelServerDeps): Promise<{ stop: (
     if (!url.startsWith("/panel/api/")) return;
     if (url === "/panel/api/auth/login") return;
 
-    const sessionId = request.cookies.guardian_session;
+    const sessionId = request.cookies.heimdall_session;
     if (!sessionId) {
       reply.code(401).send({ error: "Not authenticated" });
       return;

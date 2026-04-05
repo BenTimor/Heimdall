@@ -1,4 +1,4 @@
-# Guardian Agent Guide
+# Heimdall Agent Guide
 
 This file is the canonical repository-wide guide for AI coding agents and automation tools.
 
@@ -11,7 +11,7 @@ This file is the canonical repository-wide guide for AI coding agents and automa
 
 ## Repository Overview
 
-Guardian keeps live API secrets off developer machines.
+Heimdall keeps live API secrets off developer machines.
 
 - `proxy-server/` is the control plane and data plane:
   - authenticates clients and tunnel sessions
@@ -64,7 +64,7 @@ cargo test
 cargo run -- run --config config/agent-config.yaml
 cargo run -- test --config config/agent-config.yaml
 cargo run -- status
-cargo run -- install --config config/agent-config.yaml --ca-cert /path/to/guardian-ca.crt
+cargo run -- install --config config/agent-config.yaml --ca-cert /path/to/heimdall-ca.crt
 cargo run -- uninstall
 ```
 

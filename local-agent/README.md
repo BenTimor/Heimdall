@@ -1,6 +1,8 @@
-# Guardian Local Agent
+# Heimdall Local Agent
 
-The local agent runs on developer machines. It exposes a local CONNECT proxy, can intercept HTTPS traffic transparently, and forwards approved traffic to the Guardian proxy server over an authenticated TLS tunnel.
+The local agent runs on developer machines. It exposes a local CONNECT proxy, can intercept HTTPS traffic transparently, and forwards approved traffic to the Heimdall proxy server over an authenticated TLS tunnel.
+
+Project site: [heimdall.co.il](https://heimdall.co.il)
 
 ## Installation
 
@@ -20,7 +22,7 @@ cargo build --release
 cp config/agent-config.example.yaml config/agent-config.yaml
 ```
 
-Source builds currently produce `target/release/guardian-local-agent`.
+Source builds currently produce `target/release/heimdall-local-agent`.
 
 ## Minimal Configuration
 
@@ -42,7 +44,7 @@ The proxy server must have a matching client entry in `proxy-server/config/serve
 ### From a source build
 
 ```bash
-target/release/guardian-local-agent run --config config/agent-config.yaml
+target/release/heimdall-local-agent run --config config/agent-config.yaml
 ```
 
 ### With Cargo
@@ -54,11 +56,11 @@ cargo run --release -- run --config config/agent-config.yaml
 Useful companion commands:
 
 ```bash
-target/release/guardian-local-agent test --config config/agent-config.yaml
-target/release/guardian-local-agent status
+target/release/heimdall-local-agent test --config config/agent-config.yaml
+target/release/heimdall-local-agent status
 ```
 
-If your packaged release uses a shorter wrapper name such as `guardian-agent`, the same subcommands apply.
+If your packaged release uses a shorter wrapper name such as `heimdall-agent`, the same subcommands apply.
 
 ## Use It
 
@@ -86,12 +88,12 @@ transparent:
   method: "auto"
 ```
 
-Then install Guardian with elevated privileges so the CA certificate and interception rules can be applied:
+Then install Heimdall with elevated privileges so the CA certificate and interception rules can be applied:
 
 ```bash
 cargo run --release -- install \
   --config config/agent-config.yaml \
-  --ca-cert /path/to/guardian-ca.crt
+  --ca-cert /path/to/heimdall-ca.crt
 ```
 
 Windows supports `auto`, `windivert`, and `system_proxy`. Linux uses trust-store installation plus `iptables` and `ip6tables` redirection to the transparent TLS listener for approved IPv4 and IPv6 HTTPS traffic.

@@ -9,12 +9,12 @@ use std::time::SystemTime;
 pub struct RuntimeTrustState {
     pub configured: bool,
     pub ca_bundle_path: Option<PathBuf>,
-    pub guardian_ca_path: Option<PathBuf>,
+    pub heimdall_ca_path: Option<PathBuf>,
     /// Env vars that were set → their original values (None = didn't exist before)
     pub original_env_vars: HashMap<String, Option<String>>,
 }
 
-/// Persistent install state tracking what Guardian components are set up.
+/// Persistent install state tracking what Heimdall components are set up.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstallState {
     pub version: u32,
@@ -45,14 +45,14 @@ impl InstallState {
         #[cfg(target_os = "windows")]
         {
             let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(appdata).join("Guardian").join("state.json")
+            PathBuf::from(appdata).join("Heimdall").join("state.json")
         }
         #[cfg(not(target_os = "windows"))]
         {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
             PathBuf::from(home)
                 .join(".config")
-                .join("guardian")
+                .join("heimdall")
                 .join("state.json")
         }
     }

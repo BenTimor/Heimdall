@@ -1,4 +1,4 @@
-use guardian_local_agent::sni::{extract_sni, SniError};
+use heimdall_local_agent::sni::{extract_sni, SniError};
 
 // ---------------------------------------------------------------------------
 // Helpers to build ClientHello byte arrays programmatically

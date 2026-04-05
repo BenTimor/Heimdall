@@ -218,8 +218,8 @@ describe("generate-ca.ts script", () => {
     const certPem = fs.readFileSync(certPath, "utf-8");
     const cert = forge.pki.certificateFromPem(certPem);
 
-    expect(cert.subject.getField("CN")?.value).toBe("Guardian Proxy CA");
-    expect(cert.subject.getField("O")?.value).toBe("Guardian");
+    expect(cert.subject.getField("CN")?.value).toBe("Heimdall Proxy CA");
+    expect(cert.subject.getField("O")?.value).toBe("Heimdall");
 
     const bc = cert.getExtension("basicConstraints") as {
       cA: boolean;

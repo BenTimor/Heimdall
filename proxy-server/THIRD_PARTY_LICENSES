@@ -1,6 +1,6 @@
-# Third-Party Licenses -- Guardian Proxy Server
+# Third-Party Licenses -- Heimdall Proxy Server
 
-This file lists all production dependencies of the Guardian proxy server
+This file lists all production dependencies of the Heimdall proxy server
 and their software licenses. Generated from package metadata in node_modules.
 
 ## License Summary

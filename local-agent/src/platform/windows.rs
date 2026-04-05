@@ -59,11 +59,11 @@ impl PlatformOps for WindowsPlatform {
 
         info!(path = %cert_pem_path.display(), "Installing CA certificate to Windows trust store");
 
-        // Purge ALL existing Guardian CA certs first to prevent duplicates.
+        // Purge ALL existing Heimdall CA certs first to prevent duplicates.
         // certutil -addstore doesn't deduplicate, so repeated installs accumulate
         // copies. Multiple copies cause OpenSSL to pick the wrong one (e.g. an
         // older cert missing SubjectKeyIdentifier), breaking Python/Go/Ruby TLS.
-        purge_guardian_certs_from_root();
+        purge_heimdall_certs_from_root();
 
         let pem_data =
             std::fs::read_to_string(cert_pem_path).context("reading CA certificate PEM file")?;
@@ -72,7 +72,7 @@ impl PlatformOps for WindowsPlatform {
         let der = pem_to_der(&pem_data).context("decoding PEM certificate")?;
 
         // Use certutil to add to ROOT store
-        let tmp_der = std::env::temp_dir().join("guardian-ca.cer");
+        let tmp_der = std::env::temp_dir().join("heimdall-ca.cer");
         std::fs::write(&tmp_der, &der).context("writing temporary DER certificate")?;
 
         let output = std::process::Command::new("certutil")
@@ -98,15 +98,15 @@ impl PlatformOps for WindowsPlatform {
             bail!("Administrator privileges required to remove CA certificate");
         }
 
-        info!("Removing Guardian CA certificate(s) from Windows trust store");
+        info!("Removing Heimdall CA certificate(s) from Windows trust store");
 
-        let removed = purge_guardian_certs_from_root();
+        let removed = purge_heimdall_certs_from_root();
         if removed == 0 {
-            warn!("No Guardian CA certificates found in ROOT store");
+            warn!("No Heimdall CA certificates found in ROOT store");
         } else {
             info!(
                 count = removed,
-                "Removed Guardian CA certificate(s) from ROOT store"
+                "Removed Heimdall CA certificate(s) from ROOT store"
             );
         }
 
@@ -114,9 +114,9 @@ impl PlatformOps for WindowsPlatform {
     }
 
     fn is_ca_installed(&self, _cert_pem_path: &Path) -> Result<bool> {
-        // Check ROOT store for a Guardian certificate using certutil
+        // Check ROOT store for a Heimdall certificate using certutil
         let output = std::process::Command::new("certutil")
-            .args(["-verifystore", "ROOT", "Guardian"])
+            .args(["-verifystore", "ROOT", "Heimdall"])
             .output()
             .context("running certutil -verifystore")?;
 
@@ -131,19 +131,19 @@ impl PlatformOps for WindowsPlatform {
         let exe = exe_path.to_string_lossy();
         let config = config_path.to_string_lossy();
 
-        info!("Installing Guardian agent as Windows service");
+        info!("Installing Heimdall agent as Windows service");
 
         // Use sc.exe to create the service
         let output = std::process::Command::new("sc")
             .args([
                 "create",
-                "GuardianAgent",
+                "HeimdallAgent",
                 "binPath=",
                 &format!("\"{}\" run --config \"{}\"", exe, config),
                 "start=",
                 "auto",
                 "DisplayName=",
-                "Guardian Secret Proxy Agent",
+                "Heimdall Secret Proxy Agent",
             ])
             .output()
             .context("running sc create")?;
@@ -157,8 +157,8 @@ impl PlatformOps for WindowsPlatform {
         let _ = std::process::Command::new("sc")
             .args([
                 "description",
-                "GuardianAgent",
-                "Guardian transparent secret injection proxy agent",
+                "HeimdallAgent",
+                "Heimdall transparent secret injection proxy agent",
             ])
             .output();
 
@@ -166,7 +166,7 @@ impl PlatformOps for WindowsPlatform {
         let _ = std::process::Command::new("sc")
             .args([
                 "failure",
-                "GuardianAgent",
+                "HeimdallAgent",
                 "reset=",
                 "86400",
                 "actions=",
@@ -174,7 +174,7 @@ impl PlatformOps for WindowsPlatform {
             ])
             .output();
 
-        info!("Guardian agent service installed");
+        info!("Heimdall agent service installed");
         Ok(())
     }
 
@@ -183,15 +183,15 @@ impl PlatformOps for WindowsPlatform {
             bail!("Administrator privileges required to uninstall service");
         }
 
-        info!("Uninstalling Guardian agent Windows service");
+        info!("Uninstalling Heimdall agent Windows service");
 
         // Stop the service first (ignore errors if not running)
         let _ = std::process::Command::new("sc")
-            .args(["stop", "GuardianAgent"])
+            .args(["stop", "HeimdallAgent"])
             .output();
 
         let output = std::process::Command::new("sc")
-            .args(["delete", "GuardianAgent"])
+            .args(["delete", "HeimdallAgent"])
             .output()
             .context("running sc delete")?;
 
@@ -200,13 +200,13 @@ impl PlatformOps for WindowsPlatform {
             bail!("sc delete failed: {}", stderr);
         }
 
-        info!("Guardian agent service uninstalled");
+        info!("Heimdall agent service uninstalled");
         Ok(())
     }
 
     fn is_service_installed(&self) -> Result<bool> {
         let output = std::process::Command::new("sc")
-            .args(["query", "GuardianAgent"])
+            .args(["query", "HeimdallAgent"])
             .output()
             .context("running sc query")?;
 
@@ -214,10 +214,10 @@ impl PlatformOps for WindowsPlatform {
     }
 
     fn start_service(&self) -> Result<()> {
-        info!("Starting Guardian agent service");
+        info!("Starting Heimdall agent service");
 
         let output = std::process::Command::new("sc")
-            .args(["start", "GuardianAgent"])
+            .args(["start", "HeimdallAgent"])
             .output()
             .context("running sc start")?;
 
@@ -226,15 +226,15 @@ impl PlatformOps for WindowsPlatform {
             bail!("sc start failed: {}", stderr);
         }
 
-        info!("Guardian agent service started");
+        info!("Heimdall agent service started");
         Ok(())
     }
 
     fn stop_service(&self) -> Result<()> {
-        info!("Stopping Guardian agent service");
+        info!("Stopping Heimdall agent service");
 
         let output = std::process::Command::new("sc")
-            .args(["stop", "GuardianAgent"])
+            .args(["stop", "HeimdallAgent"])
             .output()
             .context("running sc stop")?;
 
@@ -243,24 +243,24 @@ impl PlatformOps for WindowsPlatform {
             bail!("sc stop failed: {}", stderr);
         }
 
-        info!("Guardian agent service stopped");
+        info!("Heimdall agent service stopped");
         Ok(())
     }
 
     fn configure_runtime_trust(&self, ca_cert_path: &Path) -> Result<RuntimeTrustState> {
-        let data_dir = guardian_data_dir();
-        std::fs::create_dir_all(&data_dir).context("creating Guardian data directory")?;
+        let data_dir = heimdall_data_dir();
+        std::fs::create_dir_all(&data_dir).context("creating Heimdall data directory")?;
 
         let bundle_path = data_dir.join("ca-bundle.pem");
-        let guardian_ca_path = data_dir.join("guardian-ca.pem");
+        let heimdall_ca_path = data_dir.join("heimdall-ca.pem");
 
-        // Export combined CA bundle (system CAs + Guardian CA already in store)
+        // Export combined CA bundle (system CAs + Heimdall CA already in store)
         export_windows_ca_bundle(&bundle_path).context("exporting Windows CA bundle")?;
         info!(path = %bundle_path.display(), "Exported combined CA bundle");
 
-        // Copy Guardian CA cert for NODE_EXTRA_CA_CERTS (additive, not a full bundle)
-        std::fs::copy(ca_cert_path, &guardian_ca_path).context("copying Guardian CA cert")?;
-        info!(path = %guardian_ca_path.display(), "Copied Guardian CA cert");
+        // Copy Heimdall CA cert for NODE_EXTRA_CA_CERTS (additive, not a full bundle)
+        std::fs::copy(ca_cert_path, &heimdall_ca_path).context("copying Heimdall CA cert")?;
+        info!(path = %heimdall_ca_path.display(), "Copied Heimdall CA cert");
 
         // Check existing state to handle re-install correctly
         let existing_state = crate::state::InstallState::load().ok().flatten();
@@ -271,12 +271,12 @@ impl PlatformOps for WindowsPlatform {
         let existing_originals = existing_state.map(|s| s.runtime_trust.original_env_vars);
 
         let bundle_str = bundle_path.to_string_lossy().to_string();
-        let guardian_ca_str = guardian_ca_path.to_string_lossy().to_string();
+        let heimdall_ca_str = heimdall_ca_path.to_string_lossy().to_string();
 
         let env_vars = vec![
             ("SSL_CERT_FILE", bundle_str.as_str()),
             ("REQUESTS_CA_BUNDLE", bundle_str.as_str()),
-            ("NODE_EXTRA_CA_CERTS", guardian_ca_str.as_str()),
+            ("NODE_EXTRA_CA_CERTS", heimdall_ca_str.as_str()),
         ];
 
         let mut original_env_vars = HashMap::new();
@@ -303,7 +303,7 @@ impl PlatformOps for WindowsPlatform {
         Ok(RuntimeTrustState {
             configured: true,
             ca_bundle_path: Some(bundle_path),
-            guardian_ca_path: Some(guardian_ca_path),
+            heimdall_ca_path: Some(heimdall_ca_path),
             original_env_vars,
         })
     }
@@ -331,7 +331,7 @@ impl PlatformOps for WindowsPlatform {
                 std::fs::remove_file(path).ok();
             }
         }
-        if let Some(ref path) = state.guardian_ca_path {
+        if let Some(ref path) = state.heimdall_ca_path {
             if path.exists() {
                 std::fs::remove_file(path).ok();
             }
@@ -515,14 +515,14 @@ fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
     base64_decode(&base64_data)
 }
 
-/// Remove all Guardian CA certificates from the Windows Root stores.
+/// Remove all Heimdall CA certificates from the Windows Root stores.
 /// Returns the number of certificates removed.
 ///
 /// Uses PowerShell to enumerate both LocalMachine\Root and CurrentUser\Root,
-/// find all certs whose Subject contains "Guardian", and remove them by
+/// find all certs whose Subject contains "Heimdall", and remove them by
 /// thumbprint.  This is more reliable than `certutil -delstore` which has
 /// inconsistent substring matching and doesn't touch CurrentUser.
-fn purge_guardian_certs_from_root() -> usize {
+fn purge_heimdall_certs_from_root() -> usize {
     let ps_script = r#"
 $removed = 0
 foreach ($loc in @('LocalMachine', 'CurrentUser')) {
@@ -531,7 +531,7 @@ foreach ($loc in @('LocalMachine', 'CurrentUser')) {
         $store.Open('ReadWrite')
         $toRemove = @()
         foreach ($cert in $store.Certificates) {
-            if ($cert.Subject -match 'Guardian') {
+            if ($cert.Subject -match 'Heimdall') {
                 $toRemove += $cert
             }
         }
@@ -554,7 +554,7 @@ Write-Host $removed
             let stdout = String::from_utf8_lossy(&o.stdout);
             let count: usize = stdout.trim().parse().unwrap_or(0);
             if count > 0 {
-                debug!(count, "Purged Guardian CA certificates from Root stores");
+                debug!(count, "Purged Heimdall CA certificates from Root stores");
             }
             count
         }
@@ -564,7 +564,7 @@ Write-Host $removed
             let mut removed = 0;
             for _ in 0..50 {
                 let out = std::process::Command::new("certutil")
-                    .args(["-f", "-delstore", "ROOT", "Guardian"])
+                    .args(["-f", "-delstore", "ROOT", "Heimdall"])
                     .output();
                 match out {
                     Ok(o) if o.status.success() => removed += 1,
@@ -576,10 +576,10 @@ Write-Host $removed
     }
 }
 
-/// Get the Guardian data directory (%APPDATA%\Guardian).
-fn guardian_data_dir() -> PathBuf {
+/// Get the Heimdall data directory (%APPDATA%\Heimdall).
+fn heimdall_data_dir() -> PathBuf {
     let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(appdata).join("Guardian")
+    PathBuf::from(appdata).join("Heimdall")
 }
 
 /// Export all trusted root certificates from the Windows certificate stores

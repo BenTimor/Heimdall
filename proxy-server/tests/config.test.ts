@@ -90,7 +90,7 @@ describe("loadConfig", () => {
   let tmpDir: string;
 
   beforeAll(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "guardian-test-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "heimdall-test-"));
   });
 
   afterAll(() => {

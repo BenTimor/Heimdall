@@ -1,10 +1,12 @@
-# Guardian
+# Heimdall
 
-Guardian keeps live API secrets off developer machines.
+Heimdall keeps live API secrets off developer machines.
 
-Applications send placeholders such as `__OPENAI_API_KEY__`; Guardian intercepts approved HTTPS traffic, resolves the real secret on a controlled server, injects it only for allowed domains, and forwards the request upstream.
+Applications send placeholders such as `__OPENAI_API_KEY__`; Heimdall intercepts approved HTTPS traffic, resolves the real secret on a controlled server, injects it only for allowed domains, and forwards the request upstream.
 
-## Why Guardian
+Project site: [heimdall.co.il](https://heimdall.co.il)
+
+## Why Heimdall
 
 - centralize secret ownership instead of distributing live keys to laptops and CI runners
 - support both explicit `HTTPS_PROXY` routing and transparent HTTPS interception
@@ -24,9 +26,9 @@ Applications send placeholders such as `__OPENAI_API_KEY__`; Guardian intercepts
 The recommended first run is the transparent local-agent flow on a developer workstation:
 
 1. Set up the proxy server and tunnel listener.
-2. Copy the Guardian CA certificate to the developer machine.
+2. Copy the Heimdall CA certificate to the developer machine.
 3. Configure the local agent with `transparent.enabled: true`.
-4. Run `guardian-local-agent install --ca-cert /path/to/guardian-ca.crt`.
+4. Run `heimdall-local-agent install --ca-cert /path/to/heimdall-ca.crt`.
 5. Start the agent and verify that apps work without setting `HTTPS_PROXY`.
 
 Follow [docs/quickstart.md](docs/quickstart.md) for the full transparent walkthrough.
@@ -51,7 +53,7 @@ The Rust local agent is designed to be distributed as downloadable executables s
 
 ## How It Works
 
-Guardian supports three practical usage modes:
+Heimdall supports three practical usage modes:
 
 - local-only mode
   - point `HTTPS_PROXY` straight at the proxy server

@@ -1,7 +1,8 @@
 [package]
-name = "guardian-local-agent"
+name = "heimdall-local-agent"
 version = "0.2.0"
 edition = "2021"
+homepage = "https://heimdall.co.il"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

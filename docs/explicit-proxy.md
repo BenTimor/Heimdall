@@ -1,6 +1,6 @@
-# Guardian Explicit Proxy Guide
+# Heimdall Explicit Proxy Guide
 
-This guide covers Guardian's non-transparent mode, where you route traffic explicitly with `HTTPS_PROXY` instead of changing machine-wide network behavior.
+This guide covers Heimdall's non-transparent mode, where you route traffic explicitly with `HTTPS_PROXY` instead of changing machine-wide network behavior.
 
 Use this mode when you want a narrower blast radius or when you control environment variables but not the full machine.
 
@@ -10,7 +10,7 @@ Use this mode when you want a narrower blast radius or when you control environm
 - CI/CD pipelines where you can set env vars but cannot install system-wide interception rules
 - containers or ephemeral environments where machine-wide install steps are undesirable
 - Linux VPS or server environments where the workload runs as `root` or transparent interception is not the right fit
-- phased rollouts where you want to validate Guardian on a few commands before enabling transparent mode
+- phased rollouts where you want to validate Heimdall on a few commands before enabling transparent mode
 
 ## Two Variants
 
@@ -35,7 +35,7 @@ Start from `local-agent/config/agent-config.example.yaml` and leave transparent 
 server:
   host: "proxy.example.com"
   port: 8443
-  ca_cert: "/path/to/guardian-ca.crt"
+  ca_cert: "/path/to/heimdall-ca.crt"
 
 auth:
   machine_id: "dev-machine-01"
@@ -45,33 +45,33 @@ transparent:
   enabled: false
 ```
 
-### 3. Make clients trust the Guardian CA
+### 3. Make clients trust the Heimdall CA
 
-Even in explicit proxy mode, Guardian still performs MITM on approved domains, so clients must trust the Guardian CA.
+Even in explicit proxy mode, Heimdall still performs MITM on approved domains, so clients must trust the Heimdall CA.
 
 Choose one of these trust strategies:
 
 - install the CA on the machine, but skip interception:
 
 ```bash
-guardian-local-agent install \
+heimdall-local-agent install \
   --config config/agent-config.yaml \
-  --ca-cert /path/to/guardian-ca.crt \
+  --ca-cert /path/to/heimdall-ca.crt \
   --no-interception
 ```
 
 - or use per-tool trust overrides:
-  - `curl --cacert /path/to/guardian-ca.crt`
-  - `REQUESTS_CA_BUNDLE=/path/to/guardian-ca.crt`
-  - `NODE_EXTRA_CA_CERTS=/path/to/guardian-ca.crt`
-  - `SSL_CERT_FILE=/path/to/guardian-ca.crt`
+  - `curl --cacert /path/to/heimdall-ca.crt`
+  - `REQUESTS_CA_BUNDLE=/path/to/heimdall-ca.crt`
+  - `NODE_EXTRA_CA_CERTS=/path/to/heimdall-ca.crt`
+  - `SSL_CERT_FILE=/path/to/heimdall-ca.crt`
 
 The second approach is especially useful in CI/CD or locked-down environments.
 
 ### 4. Start the local agent
 
 ```bash
-guardian-local-agent run --config config/agent-config.yaml
+heimdall-local-agent run --config config/agent-config.yaml
 ```
 
 Or from source:
@@ -86,7 +86,7 @@ Example one-shot command:
 
 ```bash
 HTTPS_PROXY=http://127.0.0.1:19080 \
-  curl --cacert /path/to/guardian-ca.crt \
+  curl --cacert /path/to/heimdall-ca.crt \
   https://api.openai.com/v1/models \
   -H "Authorization: Bearer __OPENAI_API_KEY__"
 ```
@@ -101,7 +101,7 @@ This is a good fit when you want to wrap one tool, one shell session, one IDE la
 
 ## Option B: Explicit Proxy Directly To The Proxy Server
 
-You can also skip the local agent and point `HTTPS_PROXY` straight at the Guardian proxy server.
+You can also skip the local agent and point `HTTPS_PROXY` straight at the Heimdall proxy server.
 
 This is often the simplest model for:
 
@@ -112,7 +112,7 @@ This is often the simplest model for:
 
 ### 1. Configure client auth
 
-Use a proxy URL that includes the Guardian `machineId` and `token`:
+Use a proxy URL that includes the Heimdall `machineId` and `token`:
 
 ```bash
 HTTPS_PROXY=http://machineId:token@proxy.example.com:8080
@@ -124,14 +124,14 @@ Examples:
 
 ```bash
 HTTPS_PROXY=http://machineId:token@proxy.example.com:8080 \
-  curl --cacert /path/to/guardian-ca.crt \
+  curl --cacert /path/to/heimdall-ca.crt \
   https://api.openai.com/v1/models \
   -H "Authorization: Bearer __OPENAI_API_KEY__"
 ```
 
 ```bash
 export HTTPS_PROXY=http://machineId:token@proxy.example.com:8080
-export REQUESTS_CA_BUNDLE=/path/to/guardian-ca.crt
+export REQUESTS_CA_BUNDLE=/path/to/heimdall-ca.crt
 ```
 
 This pattern works well when the environment is disposable and you only need env vars, not a machine-level install.
