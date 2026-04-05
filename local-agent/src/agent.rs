@@ -28,12 +28,12 @@ pub async fn run(config: AgentConfig) -> Result<()> {
     let domain_filter = Arc::new(DomainFilter::new());
     let max_connections = config.tunnel.as_ref().map_or(1000, |t| t.max_connections);
 
-    // On Linux, re-apply iptables interception rules if they were lost after reboot.
-    // This runs once at startup, not per-session.
+    // On Linux, re-apply transparent interception rules if they were lost after
+    // reboot. This runs once at startup, not per-session.
     #[cfg(target_os = "linux")]
     if config.transparent.enabled {
         log_linux_transparent_caveats();
-        reapply_iptables_if_needed(&config);
+        reapply_linux_interception_if_needed(&config);
     }
 
     // Spawn ctrl-c handler that signals the top-level shutdown.
@@ -267,10 +267,10 @@ pub async fn run(config: AgentConfig) -> Result<()> {
     }
 }
 
-/// Re-apply iptables interception rules if they were lost after reboot.
-/// iptables rules are not persistent by default.
+/// Re-apply Linux transparent interception rules if they were lost after reboot.
+/// iptables/ip6tables rules are not persistent by default.
 #[cfg(target_os = "linux")]
-fn reapply_iptables_if_needed(config: &AgentConfig) {
+fn reapply_linux_interception_if_needed(config: &AgentConfig) {
     match crate::state::InstallState::load() {
         Ok(Some(state)) if state.interception_enabled => {
             let platform = crate::platform::platform();
@@ -294,15 +294,15 @@ fn reapply_iptables_if_needed(config: &AgentConfig) {
             // No state or interception not enabled — skip.
         }
         Err(e) => {
-            warn!(error = %e, "failed to load install state for iptables check");
+            warn!(error = %e, "failed to load install state for interception check");
         }
     }
 }
 
 #[cfg(target_os = "linux")]
 fn log_linux_transparent_caveats() {
-    warn!(
-        "linux transparent mode currently redirects outbound IPv4 traffic with iptables; IPv6 traffic may bypass Guardian"
+    info!(
+        "linux transparent mode redirects outbound IPv4 and IPv6 traffic with iptables/ip6tables"
     );
 
     if linux_running_as_root() {

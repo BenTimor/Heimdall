@@ -47,7 +47,7 @@ Flow:
    - non-matching domains go directly to the target
 4. The proxy server handles tunneled traffic the same way as explicit proxy mode.
 
-Windows supports `auto`, `windivert`, and `system_proxy` interception methods. Linux uses trust-store installation plus `iptables` redirection to the transparent TLS listener. The current Linux implementation redirects outbound IPv4 traffic and excludes root-owned client processes to avoid tunnel loops.
+Windows supports `auto`, `windivert`, and `system_proxy` interception methods. Linux uses trust-store installation plus `iptables` and `ip6tables` redirection to the transparent TLS listener for outbound IPv4 and IPv6 HTTPS traffic, and excludes root-owned client processes to avoid tunnel loops.
 
 ## 3. Local-only mode
 

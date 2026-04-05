@@ -210,7 +210,7 @@ fn install_interception_port(local_proxy_port: u16, _transparent_port: u16) -> u
 
 #[cfg(target_os = "linux")]
 fn install_interception_mode_label() -> &'static str {
-    "iptables redirect"
+    "iptables/ip6tables redirect"
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -220,7 +220,7 @@ fn install_interception_mode_label() -> &'static str {
 
 #[cfg(target_os = "linux")]
 fn install_interception_summary() -> &'static str {
-    "Traffic interception enabled (iptables transparent redirect)"
+    "Traffic interception enabled (iptables/ip6tables transparent redirect)"
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -402,7 +402,7 @@ fn cmd_install(
     if install_state.interception_enabled {
         println!();
         println!(
-            "Linux transparent-mode notes: outbound IPv4 traffic is redirected with iptables."
+            "Linux transparent-mode notes: outbound IPv4 and IPv6 traffic is redirected with iptables/ip6tables."
         );
         println!(
             "Linux transparent-mode notes: root-owned client processes are excluded to avoid tunnel loops."

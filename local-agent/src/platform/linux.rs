@@ -1,7 +1,7 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use tracing::info;
 
 use super::PlatformOps;
 use crate::state::RuntimeTrustState;
@@ -10,6 +10,24 @@ const SERVICE_NAME: &str = "guardian-agent";
 const UNIT_FILE_PATH: &str = "/etc/systemd/system/guardian-agent.service";
 const CA_CERT_PATH: &str = "/usr/local/share/ca-certificates/guardian-proxy.crt";
 const IPTABLES_COMMENT: &str = "guardian-redirect";
+const NAT_OUTPUT_LIST_ARGS: [&str; 6] = ["-t", "nat", "-L", "OUTPUT", "-n", "--line-numbers"];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InterceptionTable {
+    program: &'static str,
+    family: &'static str,
+}
+
+const INTERCEPTION_TABLES: [InterceptionTable; 2] = [
+    InterceptionTable {
+        program: "iptables",
+        family: "IPv4",
+    },
+    InterceptionTable {
+        program: "ip6tables",
+        family: "IPv6",
+    },
+];
 
 pub struct LinuxPlatform;
 
@@ -52,101 +70,43 @@ impl PlatformOps for LinuxPlatform {
         info!(
             transparent_port,
             uid = %uid,
-            "Enabling iptables REDIRECT for outbound TCP:443"
+            "Enabling transparent REDIRECT rules for outbound TCP:443"
         );
 
         // Remove any stale Guardian rules first so reinstalling can repair an
         // older redirect target without accumulating duplicates.
-        let _ = remove_rules_by_comment();
+        remove_all_guardian_rules()?;
 
-        // Redirect outbound TCP:443 to the transparent listener port,
-        // excluding traffic from the agent's own UID to avoid loops.
-        run_command_check(
-            "iptables",
-            &[
-                "-t",
-                "nat",
-                "-A",
-                "OUTPUT",
-                "-p",
-                "tcp",
-                "--dport",
-                "443",
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                &uid,
-                "-m",
-                "comment",
-                "--comment",
-                IPTABLES_COMMENT,
-                "-j",
-                "REDIRECT",
-                "--to-port",
-                &transparent_port.to_string(),
-            ],
-        )?;
+        if let Err(error) = add_all_redirect_rules(&uid, transparent_port) {
+            let rollback_error = remove_all_guardian_rules().err();
+            return Err(match rollback_error {
+                Some(rollback_error) => anyhow!(
+                    "failed to enable dual-stack transparent interception: {:#}; cleanup after partial failure also failed: {:#}",
+                    error,
+                    rollback_error
+                ),
+                None => error.context("failed to enable dual-stack transparent interception"),
+            });
+        }
 
-        info!("iptables REDIRECT rule added");
+        info!("iptables/ip6tables REDIRECT rules added");
         Ok(())
     }
 
     fn disable_interception(&self) -> Result<()> {
-        info!("Disabling iptables REDIRECT rule");
-
-        let uid = get_uid()?;
-
-        // Remove the exact rule we added. If it fails (e.g., rule doesn't exist), warn.
-        let output = run_command(
-            "iptables",
-            &[
-                "-t",
-                "nat",
-                "-D",
-                "OUTPUT",
-                "-p",
-                "tcp",
-                "--dport",
-                "443",
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                &uid,
-                "-m",
-                "comment",
-                "--comment",
-                IPTABLES_COMMENT,
-                "-j",
-                "REDIRECT",
-                "--to-port",
-                "0",
-            ],
-        )?;
-
-        if !output.status.success() {
-            // Try a broader approach: list and delete by line number
-            warn!("Direct rule deletion failed, attempting to find and remove by comment");
-            remove_rules_by_comment()?;
-        }
-
-        info!("iptables REDIRECT rule removed");
+        info!("Disabling transparent REDIRECT rules");
+        remove_all_guardian_rules()?;
+        info!("iptables/ip6tables REDIRECT rules removed");
         Ok(())
     }
 
     fn is_interception_active(&self) -> Result<bool> {
-        let output = run_command(
-            "iptables",
-            &["-t", "nat", "-L", "OUTPUT", "-n", "--line-numbers"],
-        )?;
-
-        if !output.status.success() {
-            return Ok(false);
+        for table in interception_tables() {
+            if !table_has_guardian_rule(table.program)? {
+                return Ok(false);
+            }
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(stdout.contains(IPTABLES_COMMENT))
+        Ok(true)
     }
 
     fn install_ca_cert(&self, cert_pem_path: &Path) -> Result<()> {
@@ -319,6 +279,133 @@ WantedBy=multi-user.target
     }
 }
 
+fn interception_tables() -> &'static [InterceptionTable] {
+    &INTERCEPTION_TABLES
+}
+
+fn run_command_check_owned(program: &str, args: &[String]) -> Result<()> {
+    let borrowed_args: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_command_check(program, &borrowed_args)
+}
+
+fn build_redirect_rule_args(uid: &str, transparent_port: u16) -> Vec<String> {
+    vec![
+        "-t".to_string(),
+        "nat".to_string(),
+        "-A".to_string(),
+        "OUTPUT".to_string(),
+        "-p".to_string(),
+        "tcp".to_string(),
+        "--dport".to_string(),
+        "443".to_string(),
+        "-m".to_string(),
+        "owner".to_string(),
+        "!".to_string(),
+        "--uid-owner".to_string(),
+        uid.to_string(),
+        "-m".to_string(),
+        "comment".to_string(),
+        "--comment".to_string(),
+        IPTABLES_COMMENT.to_string(),
+        "-j".to_string(),
+        "REDIRECT".to_string(),
+        "--to-port".to_string(),
+        transparent_port.to_string(),
+    ]
+}
+
+fn build_delete_rule_args(line_number: u32) -> Vec<String> {
+    vec![
+        "-t".to_string(),
+        "nat".to_string(),
+        "-D".to_string(),
+        "OUTPUT".to_string(),
+        line_number.to_string(),
+    ]
+}
+
+fn parse_guardian_rule_line_numbers(stdout: &str) -> Vec<u32> {
+    let mut line_numbers = Vec::new();
+    for line in stdout.lines() {
+        if !line.contains(IPTABLES_COMMENT) {
+            continue;
+        }
+
+        if let Some(num_str) = line.split_whitespace().next() {
+            if let Ok(num) = num_str.parse::<u32>() {
+                line_numbers.push(num);
+            }
+        }
+    }
+    line_numbers
+}
+
+fn list_guardian_rule_line_numbers(program: &str) -> Result<Vec<u32>> {
+    let output = run_command(program, &NAT_OUTPUT_LIST_ARGS)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "{} {} failed: {}",
+            program,
+            NAT_OUTPUT_LIST_ARGS.join(" "),
+            stderr
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_guardian_rule_line_numbers(&stdout))
+}
+
+fn table_has_guardian_rule(program: &str) -> Result<bool> {
+    Ok(!list_guardian_rule_line_numbers(program)?.is_empty())
+}
+
+fn add_all_redirect_rules(uid: &str, transparent_port: u16) -> Result<()> {
+    for table in interception_tables() {
+        let args = build_redirect_rule_args(uid, transparent_port);
+        run_command_check_owned(table.program, &args).with_context(|| {
+            format!(
+                "adding {} transparent redirect rule via {}",
+                table.family, table.program
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn remove_rules_by_comment(program: &str) -> Result<()> {
+    let mut line_numbers = list_guardian_rule_line_numbers(program)?;
+
+    // Delete in reverse order so line numbers stay valid.
+    line_numbers.reverse();
+    for num in line_numbers {
+        let args = build_delete_rule_args(num);
+        run_command_check_owned(program, &args)
+            .with_context(|| format!("removing Guardian redirect rule {} via {}", num, program))?;
+    }
+
+    Ok(())
+}
+
+fn remove_all_guardian_rules() -> Result<()> {
+    let mut errors = Vec::new();
+
+    for table in interception_tables() {
+        if let Err(error) = remove_rules_by_comment(table.program) {
+            errors.push(format!("{}: {:#}", table.program, error));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        bail!(
+            "failed to remove existing transparent redirect rules: {}",
+            errors.join("; ")
+        )
+    }
+}
+
 /// Get the Guardian data directory on Linux (~/.config/guardian).
 fn guardian_data_dir_linux() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -396,36 +483,70 @@ fn remove_etc_environment_var(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Remove all guardian iptables rules by searching for the comment marker.
-fn remove_rules_by_comment() -> Result<()> {
-    let output = run_command(
-        "iptables",
-        &["-t", "nat", "-L", "OUTPUT", "-n", "--line-numbers"],
-    )?;
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_delete_rule_args, build_redirect_rule_args, interception_tables,
+        parse_guardian_rule_line_numbers,
+    };
 
-    if !output.status.success() {
-        bail!("Failed to list iptables NAT OUTPUT rules");
+    #[test]
+    fn interception_tables_cover_ipv4_and_ipv6() {
+        let tables = interception_tables();
+        assert_eq!(tables.len(), 2);
+        assert_eq!(tables[0].program, "iptables");
+        assert_eq!(tables[1].program, "ip6tables");
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Parse line numbers for guardian rules (in reverse order to preserve indices)
-    let mut line_numbers: Vec<u32> = Vec::new();
-    for line in stdout.lines() {
-        if line.contains(IPTABLES_COMMENT) {
-            if let Some(num_str) = line.split_whitespace().next() {
-                if let Ok(num) = num_str.parse::<u32>() {
-                    line_numbers.push(num);
-                }
-            }
-        }
+    #[test]
+    fn build_redirect_rule_args_redirects_tcp_443_to_listener_port() {
+        let args = build_redirect_rule_args("1000", 19443);
+        assert_eq!(
+            args,
+            vec![
+                "-t",
+                "nat",
+                "-A",
+                "OUTPUT",
+                "-p",
+                "tcp",
+                "--dport",
+                "443",
+                "-m",
+                "owner",
+                "!",
+                "--uid-owner",
+                "1000",
+                "-m",
+                "comment",
+                "--comment",
+                "guardian-redirect",
+                "-j",
+                "REDIRECT",
+                "--to-port",
+                "19443",
+            ]
+        );
     }
 
-    // Delete in reverse order so line numbers stay valid
-    line_numbers.reverse();
-    for num in line_numbers {
-        let _ = run_command("iptables", &["-t", "nat", "-D", "OUTPUT", &num.to_string()]);
+    #[test]
+    fn parse_guardian_rule_line_numbers_ignores_unrelated_rules() {
+        let listing = "\
+num  target     prot opt source               destination
+1    RETURN     tcp  --  anywhere             anywhere             owner UID match 0 tcp dpt:https
+2    REDIRECT   tcp  --  anywhere             anywhere             owner UID match ! 1000 /* guardian-redirect */ redir ports 19443
+3    REDIRECT   tcp  --  anywhere             anywhere             tcp dpt:https redir ports 12345
+7    REDIRECT   tcp  --  anywhere             anywhere             owner UID match ! 1000 /* guardian-redirect */ redir ports 19443
+";
+
+        assert_eq!(parse_guardian_rule_line_numbers(listing), vec![2, 7]);
     }
 
-    Ok(())
+    #[test]
+    fn build_delete_rule_args_uses_output_line_number() {
+        assert_eq!(
+            build_delete_rule_args(7),
+            vec!["-t", "nat", "-D", "OUTPUT", "7"]
+        );
+    }
 }

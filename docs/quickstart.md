@@ -149,7 +149,7 @@ This step:
 
 Linux notes:
 
-- transparent mode currently redirects outbound IPv4 traffic with `iptables`
+- transparent mode redirects outbound IPv4 and IPv6 traffic with `iptables` and `ip6tables`
 - root-owned client processes are excluded from interception to avoid tunnel loops
 - for VPS or server validation, use a non-root shell for transparent-mode smoke tests or prefer [Explicit Proxy Guide](explicit-proxy.md)
 
@@ -174,9 +174,14 @@ curl -4 https://api.openai.com/v1/models \
   -H "Authorization: Bearer __OPENAI_API_KEY__"
 ```
 
+```bash
+curl -6 https://api.openai.com/v1/models \
+  -H "Authorization: Bearer __OPENAI_API_KEY__"
+```
+
 The application only sees the placeholder. The real secret is resolved and injected by the proxy server.
 
-On Linux, run this verification from a non-root shell. A `root` shell or an IPv6 egress path can bypass the current transparent redirect.
+On Linux, run these verifications from a non-root shell. Root-owned client processes are still excluded from transparent interception to avoid tunnel loops.
 
 ## Next Steps
 

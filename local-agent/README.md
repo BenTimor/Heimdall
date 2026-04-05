@@ -94,7 +94,7 @@ cargo run --release -- install \
   --ca-cert /path/to/guardian-ca.crt
 ```
 
-Windows supports `auto`, `windivert`, and `system_proxy`. Linux uses trust-store installation plus `iptables` redirection to the transparent TLS listener.
+Windows supports `auto`, `windivert`, and `system_proxy`. Linux uses trust-store installation plus `iptables` and `ip6tables` redirection to the transparent TLS listener for approved IPv4 and IPv6 HTTPS traffic.
 
 For Linux server or VPS validation, prefer explicit proxy mode first if the workload runs as `root` or you want a narrower smoke test surface.
 

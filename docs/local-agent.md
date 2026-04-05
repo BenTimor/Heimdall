@@ -166,8 +166,8 @@ What `install` does:
   - `method: windivert` requires the packet interception path to be available
   - `method: system_proxy` is simpler but only affects apps that honor system proxy settings
 - Linux:
-  - transparent mode uses trust-store installation plus `iptables` redirection to the transparent TLS listener
-  - the current implementation redirects outbound IPv4 traffic only
+  - transparent mode uses trust-store installation plus `iptables` and `ip6tables` redirection to the transparent TLS listener
+  - approved outbound IPv4 and IPv6 HTTPS traffic is redirected into the transparent listener
   - root-owned client processes are excluded from interception to avoid tunnel loops
   - elevated privileges are required for install and uninstall
 
@@ -194,7 +194,7 @@ Useful checks:
 - `guardian-local-agent test --config ...` verifies tunnel connection and auth
 - `guardian-local-agent status` queries the health endpoint
 - if traffic is not tunneling, confirm the proxy server recognizes the `machine_id`
-- if transparent mode is enabled but apps are bypassing Guardian on Linux, test from a non-root shell and force IPv4 with `curl -4`
+- if transparent mode is enabled but apps are bypassing Guardian on Linux, test from a non-root shell with both `curl -4` and `curl -6`
 - if transparent mode is enabled but apps are bypassing Guardian, confirm the chosen interception method is actually active on that OS
 
 ## Release Guidance

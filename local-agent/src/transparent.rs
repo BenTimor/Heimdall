@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use dashmap::DashMap;
+use socket2::{Domain, Protocol, Socket, Type};
 use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
@@ -17,7 +18,7 @@ use crate::tunnel::multiplexer::Multiplexer;
 const MAX_CONCURRENT_CONNECTIONS: usize = 1024;
 
 /// Maximum number of concurrent connections from a single IP.
-/// In transparent interception mode (WinDivert/iptables), hairpin NAT causes ALL
+/// In transparent interception mode (WinDivert/iptables/ip6tables), hairpin NAT causes ALL
 /// connections to arrive from the machine's own NIC address, so this limit
 /// effectively equals the global limit.
 const MAX_CONNECTIONS_PER_IP: usize = MAX_CONCURRENT_CONNECTIONS;
@@ -40,16 +41,28 @@ pub async fn run_transparent_listener(
         .context(format!("binding transparent listener on {}", addr))?;
     info!(addr = %addr, "transparent listener started");
 
-    // Bind a secondary IPv6 listener so WinDivert hairpin-NAT works for both
-    // address families. On Windows, IPV6_V6ONLY defaults to true, so a single
-    // [::] socket does NOT accept IPv4 — we need both.
+    // Bind a secondary IPv6-only listener so transparent interception works for
+    // both address families even when the primary listener is 0.0.0.0 on Linux.
     let v6_addr = format!("[::]:{}", config.port);
-    let v6_listener = TcpListener::bind(&v6_addr).await.ok();
-    if v6_listener.is_some() {
+    #[cfg(target_os = "linux")]
+    let v6_listener = {
+        let listener =
+            bind_ipv6_only_listener(config.port).context("binding transparent IPv6 listener")?;
         info!(addr = %v6_addr, "transparent IPv6 listener started");
-    } else {
-        debug!("IPv6 transparent listener not available (non-fatal)");
-    }
+        Some(listener)
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    let v6_listener = match bind_ipv6_only_listener(config.port) {
+        Ok(listener) => {
+            info!(addr = %v6_addr, "transparent IPv6 listener started");
+            Some(listener)
+        }
+        Err(e) => {
+            debug!(error = %e, "IPv6 transparent listener not available (non-fatal)");
+            None
+        }
+    };
 
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
     let per_ip_counts: Arc<DashMap<IpAddr, usize>> = Arc::new(DashMap::new());
@@ -123,6 +136,31 @@ pub async fn run_transparent_listener(
         }
     }
     Ok(())
+}
+
+fn bind_ipv6_only_listener(port: u16) -> Result<TcpListener> {
+    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))
+        .context("creating IPv6 transparent listener socket")?;
+    socket
+        .set_reuse_address(true)
+        .context("setting SO_REUSEADDR on transparent IPv6 listener")?;
+    socket
+        .set_only_v6(true)
+        .context("setting IPV6_V6ONLY on transparent IPv6 listener")?;
+
+    let addr = std::net::SocketAddrV6::new(std::net::Ipv6Addr::UNSPECIFIED, port, 0, 0);
+    socket
+        .bind(&addr.into())
+        .with_context(|| format!("binding transparent IPv6 listener on [::]:{}", port))?;
+    socket
+        .listen(1024)
+        .context("starting transparent IPv6 listener")?;
+    socket
+        .set_nonblocking(true)
+        .context("setting transparent IPv6 listener nonblocking")?;
+
+    let std_listener: std::net::TcpListener = socket.into();
+    TcpListener::from_std(std_listener).context("converting transparent IPv6 listener to tokio")
 }
 
 /// Handle a single transparent connection.
