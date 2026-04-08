@@ -7,6 +7,7 @@ This guide focuses on running the Heimdall proxy server in a team or production-
 - Run `proxy-server` on a controlled host or VM.
 - Keep live secrets server-side only.
 - Have developers connect through the Rust local agent over the authenticated tunnel.
+- Have GitHub-hosted CI runners connect through the Rust local agent in explicit proxy mode over the authenticated tunnel.
 - Expose the admin panel only on localhost unless you intentionally front it with another secure access layer.
 
 ## Prerequisites
@@ -159,6 +160,13 @@ For each developer machine:
 
 Share [Local Agent Guide](local-agent.md) with users.
 
+For GitHub Actions:
+
+- create dedicated `auth.clients` entries per repository and environment such as `github-actions-myrepo-staging`
+- for GitHub-hosted runners, expose the tunnel listener and use the local agent in explicit proxy mode inside the job
+- for self-hosted runners on a private network, you may use the direct proxy listener instead
+- share [GitHub Actions](github-actions.md) with the workflow owners
+
 ## 6. Admin panel
 
 The admin panel is optional.
@@ -219,4 +227,3 @@ Before calling a deployment production-ready, verify:
 - release process for the local agent includes checksums and signed binaries if possible
 
 Also review [`../BACKLOG.md`](../BACKLOG.md), which tracks remaining hardening items such as rate limiting, certificate expiry monitoring, and config hot reload.
-

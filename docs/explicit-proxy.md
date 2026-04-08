@@ -4,6 +4,8 @@ This guide covers Heimdall's non-transparent mode, where you route traffic expli
 
 Use this mode when you want a narrower blast radius or when you control environment variables but not the full machine.
 
+If you are specifically setting up GitHub Actions, read [GitHub Actions](github-actions.md) as well. GitHub-hosted runners should normally use explicit proxy mode through the local agent and TLS tunnel, not the direct proxy listener.
+
 ## Good Fits For Explicit Proxy Mode
 
 - wrapping a specific CLI, desktop app, or script without affecting the whole workstation
@@ -16,8 +18,9 @@ Use this mode when you want a narrower blast radius or when you control environm
 
 - explicit proxy through the local agent
   - best when you still want the authenticated tunnel and local workstation daemon
+  - the recommended choice for GitHub-hosted runners because the tunnel hop is TLS-protected
 - explicit proxy directly to the proxy server
-  - useful for CI jobs, single-machine setups, or environments where the local agent adds no value
+  - useful for self-hosted CI jobs on private networks, single-machine setups, or environments where the local agent adds no value
 
 ## Option A: Explicit Proxy Through The Local Agent
 
@@ -105,10 +108,16 @@ You can also skip the local agent and point `HTTPS_PROXY` straight at the Heimda
 
 This is often the simplest model for:
 
-- CI/CD runners
+- self-hosted CI/CD runners on a private or otherwise transport-protected network path
 - ephemeral build containers
 - single-machine evaluations
 - environments where you control env vars but cannot run the local agent as a background process
+
+Important:
+
+- the direct Heimdall proxy listener is an HTTP CONNECT proxy, not a TLS listener
+- if the proxy hop crosses the public internet, the proxy auth credentials travel in a plain HTTP proxy request
+- for GitHub-hosted runners, prefer [Option A](#option-a-explicit-proxy-through-the-local-agent) and the [GitHub Actions guide](github-actions.md)
 
 ### 1. Configure client auth
 

@@ -33,6 +33,7 @@ The recommended first run is the transparent local-agent flow on a developer wor
 
 Follow [docs/quickstart.md](docs/quickstart.md) for the full transparent walkthrough.
 If you are validating on a VPS, CI runner, or a root-owned workload, start with [docs/explicit-proxy.md](docs/explicit-proxy.md) instead.
+For GitHub-hosted workflows specifically, use [docs/github-actions.md](docs/github-actions.md).
 
 ## Local-Agent Downloads
 
@@ -46,6 +47,7 @@ The Rust local agent is designed to be distributed as downloadable executables s
 
 - [Documentation Index](docs/README.md)
 - [Quick Start](docs/quickstart.md)
+- [GitHub Actions](docs/github-actions.md)
 - [Explicit Proxy Guide](docs/explicit-proxy.md)
 - [Deployment Guide](docs/deployment.md)
 - [Local Agent Guide](docs/local-agent.md)

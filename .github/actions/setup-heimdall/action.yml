@@ -1,0 +1,36 @@
+name: Setup Heimdall
+description: Configure proxy environment variables and CA trust files for GitHub Actions jobs that use Heimdall placeholders.
+
+inputs:
+  proxy_url:
+    description: Full proxy URL to export, for example http://127.0.0.1:19080 or http://machine:token@proxy.internal:8080
+    required: true
+  ca_cert:
+    description: Heimdall MITM CA certificate in PEM format
+    required: true
+  no_proxy:
+    description: Additional NO_PROXY entries for the job
+    required: false
+    default: "127.0.0.1,localhost"
+
+outputs:
+  proxy_url:
+    description: The proxy URL exported for the job
+    value: ${{ steps.setup.outputs.proxy_url }}
+  ca_cert_path:
+    description: Path to the Heimdall CA certificate PEM file written on the runner
+    value: ${{ steps.setup.outputs.ca_cert_path }}
+  ca_bundle_path:
+    description: Path to the merged CA bundle file exported for OpenSSL-based tools
+    value: ${{ steps.setup.outputs.ca_bundle_path }}
+
+runs:
+  using: composite
+  steps:
+    - id: setup
+      shell: bash
+      env:
+        INPUT_PROXY_URL: ${{ inputs.proxy_url }}
+        INPUT_CA_CERT: ${{ inputs.ca_cert }}
+        INPUT_NO_PROXY: ${{ inputs.no_proxy }}
+      run: ${{ github.action_path }}/setup.sh
