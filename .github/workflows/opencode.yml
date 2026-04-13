@@ -19,9 +19,10 @@ jobs:
       - x64
       - heimdall-demo
     permissions:
+      id-token: write
       contents: read
       pull-requests: read
-      issues: read
+      issues: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6

@@ -153,9 +153,10 @@ jobs:
       - x64
       - heimdall-demo
     permissions:
+      id-token: write
       contents: read
       pull-requests: read
-      issues: read
+      issues: write
 
     steps:
       - uses: actions/checkout@v6
@@ -178,9 +179,14 @@ Important differences from the older GitHub-hosted setup:
 - no `HEIMDALL_TOKEN` secret in GitHub
 - no `HEIMDALL_MACHINE_ID` variable in GitHub
 - no `HEIMDALL_TUNNEL_HOST`, `HEIMDALL_TUNNEL_PORT`, or `HEIMDALL_CA_CERT` in the workflow
-- no `id-token: write` permission when you are not using GitHub OIDC bootstrap
 - no `setup-heimdall` action step
 - no `HTTP_PROXY` or `HTTPS_PROXY` export in the workflow
+
+One current upstream OpenCode caveat:
+
+- the upstream `anomalyco/opencode/github` action still expects GitHub OIDC, so keep `id-token: write` in the workflow even though Heimdall bootstrap secrets no longer live in GitHub
+- if you only want OpenCode to reply on issue threads for now, `issues: write` is the narrow write scope to grant
+- keeping `pull-requests: read` means review-comment writeback stays restricted
 
 ## Ephemeral Runner Requirement
 
