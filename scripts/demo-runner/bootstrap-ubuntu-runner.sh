@@ -54,11 +54,11 @@ import sys
 
 items = json.loads(sys.argv[1])
 if not items:
-    print("  []")
+    print("    []")
 else:
     for item in items:
         escaped = item.replace('"', '\\"')
-        print(f'  - "{escaped}"')
+        print(f'    - "{escaped}"')
 PY
 }
 
