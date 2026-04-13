@@ -313,7 +313,6 @@ install_runner() {
     ./config.sh \
       --unattended \
       --replace \
-      --ephemeral \
       --url '${GITHUB_RUNNER_URL}' \
       --token '${runner_token}' \
       --name '${GITHUB_RUNNER_NAME}' \
@@ -323,8 +322,69 @@ install_runner() {
   "
 }
 
+install_runner_hooks() {
+  if [[ "$(lower_bool "${GITHUB_RUNNER_ENABLE_HOOKS}")" != "true" ]]; then
+    return
+  fi
+
+  log "Installing runner cleanup hooks"
+  mkdir -p "${RUNNER_HOOKS_DIR}"
+
+  cat >"${RUNNER_HOOKS_DIR}/job-started.sh" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cleanup_dir() {
+  local dir="\$1"
+  if [[ -d "\${dir}" ]]; then
+    find "\${dir}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  fi
+}
+
+cleanup_dir "${RUNNER_DIR}/${GITHUB_RUNNER_WORKDIR}"
+cleanup_dir "${RUNNER_USER_HOME}/.local/share/opencode"
+cleanup_dir "${RUNNER_USER_HOME}/.cache/opencode"
+EOF
+
+  cat >"${RUNNER_HOOKS_DIR}/job-completed.sh" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+cleanup_dir() {
+  local dir="\$1"
+  if [[ -d "\${dir}" ]]; then
+    find "\${dir}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  fi
+}
+
+cleanup_dir "${RUNNER_DIR}/${GITHUB_RUNNER_WORKDIR}"
+cleanup_dir "${RUNNER_USER_HOME}/.local/share/opencode"
+cleanup_dir "${RUNNER_USER_HOME}/.cache/opencode"
+EOF
+
+  chmod 0755 "${RUNNER_HOOKS_DIR}/job-started.sh" "${RUNNER_HOOKS_DIR}/job-completed.sh"
+  chown -R "${RUNNER_USER}:${RUNNER_USER}" "${RUNNER_HOOKS_DIR}"
+
+  local runner_env="${RUNNER_DIR}/.env"
+  if [[ -f "${runner_env}" ]]; then
+    grep -v '^ACTIONS_RUNNER_HOOK_JOB_STARTED=' "${runner_env}" | \
+      grep -v '^ACTIONS_RUNNER_HOOK_JOB_COMPLETED=' >"${runner_env}.tmp" || true
+  else
+    : >"${runner_env}.tmp"
+  fi
+  cat >>"${runner_env}.tmp" <<EOF
+ACTIONS_RUNNER_HOOK_JOB_STARTED=${RUNNER_HOOKS_DIR}/job-started.sh
+ACTIONS_RUNNER_HOOK_JOB_COMPLETED=${RUNNER_HOOKS_DIR}/job-completed.sh
+EOF
+  mv "${runner_env}.tmp" "${runner_env}"
+
+  chown "${RUNNER_USER}:${RUNNER_USER}" "${runner_env}"
+  chmod 0644 "${runner_env}"
+}
+
 install_runner_service() {
   log "Installing GitHub runner systemd service"
+
   cat >/etc/systemd/system/github-actions-runner.service <<EOF
 [Unit]
 Description=GitHub Actions Runner
@@ -341,7 +401,7 @@ ExecStart=${RUNNER_DIR}/run.sh
 KillMode=process
 KillSignal=SIGTERM
 TimeoutStopSec=30
-Restart=no
+Restart=always
 
 [Install]
 WantedBy=multi-user.target
@@ -367,7 +427,6 @@ Next steps:
   1. Add ${HEIMDALL_RUNNER_SOURCE_CIDR_HINT} to the matching proxy-side auth.clients[].sourceCidrs allowlist.
   2. Make sure your workflow uses:
        runs-on: [self-hosted, linux, x64, heimdall-demo]
-  3. Destroy this VM after each job if you want the full ephemeral demo design.
 
 This script only provisions the runner host.
 It does not deploy the Heimdall proxy server itself.
@@ -400,17 +459,21 @@ main() {
   write_heimdall_config
   install_heimdall_service
   install_runner
+  install_runner_hooks
   install_runner_service
   print_summary
 }
 
 RUNNER_USER="${RUNNER_USER:-gha-runner}"
+RUNNER_USER_HOME="${RUNNER_USER_HOME:-/home/${RUNNER_USER}}"
 RUNNER_HOME="${RUNNER_HOME:-/home/${RUNNER_USER}}"
 RUNNER_DIR="${RUNNER_DIR:-/opt/actions-runner}"
+RUNNER_HOOKS_DIR="${RUNNER_HOOKS_DIR:-${RUNNER_DIR}/hooks}"
 GITHUB_RUNNER_NAME="${GITHUB_RUNNER_NAME:-$(hostname)-$(date +%Y%m%d%H%M%S)}"
 GITHUB_RUNNER_LABELS="${GITHUB_RUNNER_LABELS:-heimdall-demo}"
 GITHUB_RUNNER_WORKDIR="${GITHUB_RUNNER_WORKDIR:-_work}"
 GITHUB_RUNNER_VERSION="${GITHUB_RUNNER_VERSION:-}"
+GITHUB_RUNNER_ENABLE_HOOKS="${GITHUB_RUNNER_ENABLE_HOOKS:-true}"
 HEIMDALL_GIT_URL="${HEIMDALL_GIT_URL:-https://github.com/BenTimor/Heimdall.git}"
 HEIMDALL_GIT_REF="${HEIMDALL_GIT_REF:-main}"
 HEIMDALL_SRC_DIR="${HEIMDALL_SRC_DIR:-/opt/heimdall-src}"

@@ -2,12 +2,12 @@
 
 This guide shows how to use Heimdall placeholders in GitHub Actions without storing the real upstream API secrets in GitHub.
 
-For the public `opencode` demo, the recommended path is now an ephemeral self-hosted Linux runner with Heimdall preinstalled on the host in transparent mode. The workflow keeps using the upstream OpenCode GitHub Action, but the Heimdall client credential lives only on the disposable runner host, not in GitHub secrets or workflow environment variables.
+For the public `opencode` demo, the recommended path in this repository is one always-on self-hosted Linux runner with Heimdall installed on the host in transparent mode, plus aggressive cleanup hooks between jobs. The workflow keeps using the upstream OpenCode GitHub Action, but the Heimdall client credential lives on the runner host, not in GitHub secrets or workflow environment variables.
 
 ## Short Version
 
 - public demo or security-sensitive showcase:
-  - use an ephemeral self-hosted Linux runner
+  - use one persistent self-hosted Linux runner with cleanup hooks
   - install Heimdall on the runner host as a root-owned service
   - enable transparent interception on the host
   - allowlist the runner egress IP or CIDR on the Heimdall server with `sourceCidrs`
@@ -23,15 +23,15 @@ For the public `opencode` demo, the recommended path is now an ephemeral self-ho
 
 The public demo should use this model:
 
-1. build a dedicated Linux runner image
+1. run one always-on self-hosted Linux runner VPS
 2. install the GitHub runner as an unprivileged user such as `gha-runner`
 3. install Heimdall as a host service owned by `root` or a dedicated `heimdall` user
 4. store the Heimdall config at `/etc/heimdall/agent-config.yaml` with `0600` permissions
-5. install the Heimdall CA into the machine trust store during image build or first boot
-6. enable transparent interception before the runner accepts jobs
-7. register the runner as ephemeral so it handles one job and is then destroyed
+5. install the Heimdall CA into the machine trust store
+6. enable transparent interception on the host before the runner starts taking jobs
+7. install runner hooks that wipe the workdir and OpenCode state before and after each job
 
-This keeps the upstream OpenCode action unchanged while moving the reusable Heimdall credential out of GitHub and into a disposable machine boundary.
+This keeps the upstream OpenCode action unchanged while moving the reusable Heimdall credential out of GitHub and out of workflow secrets.
 
 The repository's own [`opencode` workflow](../.github/workflows/opencode.yml) now follows this shape:
 
@@ -188,21 +188,17 @@ One current upstream OpenCode caveat:
 - if you only want OpenCode to reply on issue threads for now, `issues: write` is the narrow write scope to grant
 - keeping `pull-requests: read` means review-comment writeback stays restricted
 
-## Ephemeral Runner Requirement
+## Why Cleanup Hooks Matter
 
-Use GitHub's ephemeral self-hosted runner lifecycle for the public demo.
+This design does reuse the same VPS across jobs, so cleanup between jobs matters.
 
-That means:
+The runner bootstrap installs hooks that wipe:
 
-- one runner VM accepts one job
-- after the job, destroy the VM
-- do not reuse the workspace or Heimdall runtime state for the next demo run
+- the GitHub runner work directory
+- OpenCode local state under the runner user's home directory
+- OpenCode cache directories under the runner user's home directory
 
-Why this matters:
-
-- it limits the lifetime of any leaked demo-scoped material
-- it prevents cross-job persistence in workspaces, logs, or temp files
-- it lets you keep the upstream OpenCode action unchanged while still enforcing strong host isolation
+That is not as strong as destroying the entire VM after every job, but it is the practical setup that lets the public demo run continuously without manual SSH intervention.
 
 ## Linux Transparent Scope
 

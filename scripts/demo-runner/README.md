@@ -15,7 +15,8 @@ It installs:
 - the Heimdall CA into the machine trust store
 - Linux transparent interception on the runner host
 - a GitHub self-hosted runner as the unprivileged `gha-runner` user
-- an ephemeral runner registration tied to your repository or org
+- a GitHub self-hosted runner registration tied to your repository or org
+- cleanup hooks that wipe the runner workdir and OpenCode state between jobs
 
 ## Usage
 
@@ -31,4 +32,4 @@ sudo -E bash ./scripts/demo-runner/bootstrap-ubuntu-runner.sh
 
 - This script provisions the runner host only.
 - It does not deploy the Heimdall proxy server.
-- For the intended public demo security posture, destroy the VPS after each job.
+- The runner stays online and keeps picking up jobs automatically.
