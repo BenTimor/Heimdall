@@ -1,3 +1,4 @@
+use crate::config::TransparentConfig;
 use crate::state::RuntimeTrustState;
 use anyhow::Result;
 use std::path::Path;
@@ -13,13 +14,21 @@ pub mod windows;
 /// and service management.
 pub trait PlatformOps {
     /// Enable transparent traffic interception, redirecting TCP:443 to the given port.
-    fn enable_interception(&self, transparent_port: u16) -> Result<()>;
+    fn enable_interception(
+        &self,
+        transparent_config: &TransparentConfig,
+        local_proxy_port: u16,
+    ) -> Result<()>;
 
     /// Disable transparent traffic interception.
     fn disable_interception(&self) -> Result<()>;
 
     /// Check if traffic interception is currently active.
-    fn is_interception_active(&self) -> Result<bool>;
+    fn is_interception_active(
+        &self,
+        transparent_config: &TransparentConfig,
+        local_proxy_port: u16,
+    ) -> Result<bool>;
 
     /// Install the CA certificate into the system/user trust store.
     fn install_ca_cert(&self, cert_pem_path: &Path) -> Result<()>;

@@ -267,6 +267,68 @@ describe("Proxy Hardening", () => {
     expect(body.bodyLength).toBe(10_000);
   });
 
+  it("should reject direct proxy auth from non-allowed source IPs", async () => {
+    const ca = createTestCA();
+    const restrictedConfig: ServerConfig = {
+      proxy: {
+        port: 0,
+        host: "127.0.0.1",
+        tcpNoDelay: true,
+        connectionPool: {
+          enabled: true,
+          idleTtlMs: 30_000,
+          maxPerHost: 6,
+          maxTotal: 256,
+          cleanupIntervalMs: 10_000,
+        },
+      },
+      ca: { certFile: "", keyFile: "" },
+      secrets: {},
+      cache: { enabled: true, defaultTtlSeconds: 300 },
+      auth: {
+        enabled: true,
+        clients: [{
+          machineId: "test-machine",
+          token: "test-token-123",
+          sourceCidrs: ["10.0.0.0/8"],
+        }],
+      },
+      bypass: { domains: [] },
+      aws: { region: "us-east-1" },
+      logging: { level: "silent", audit: { enabled: false }, latency: { enabled: false } },
+    };
+
+    const restrictedProxy = new ProxyServer({
+      config: restrictedConfig,
+      certManager: new CertManager(ca.caCertPem, ca.caKeyPem),
+      resolver: new SecretResolver(new Map([["env", new EnvProvider()]]), new SecretCache(300_000)),
+      auditLogger: new AuditLogger({ enabled: false }),
+      authenticator: new Authenticator(
+        { enabled: restrictedConfig.auth.enabled },
+        new ConfigAuthBackend(restrictedConfig.auth),
+      ),
+      logger: createMockLogger(),
+      targetTlsOptions: { rejectUnauthorized: false },
+    });
+
+    await restrictedProxy.start();
+
+    try {
+      const result = await proxyRequest({
+        proxyPort: restrictedProxy.address!.port,
+        targetHost: "127.0.0.1",
+        targetPort: mockTarget.port,
+        request: "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        auth: AUTH,
+      });
+
+      expect(result.connectStatus).toBe(407);
+      expect(result.body).toContain("407 Proxy Authentication Required");
+    } finally {
+      await restrictedProxy.stop();
+    }
+  });
+
   it("should stream fixed-length responses before the full upstream body arrives", async () => {
     const delayedTarget = await createMockHttpsServer((_req, res) => {
       const firstChunk = "hello";

@@ -1,6 +1,12 @@
 # Heimdall Local Agent Guide
 
-The local agent is the workstation-side entry point for Heimdall. It gives developers a local proxy endpoint, can intercept HTTPS transparently, and forwards approved traffic to the proxy server over an authenticated TLS tunnel.
+The local agent is the workstation-side or runner-host-side entry point for Heimdall. It provides:
+
+- a local CONNECT proxy endpoint
+- optional transparent HTTPS interception
+- an authenticated TLS tunnel back to the Heimdall proxy server
+
+For developers, this usually means a local daemon on the workstation. For the public OpenCode demo, it means a root-owned service on an ephemeral self-hosted Linux runner.
 
 ## Installation Options
 
@@ -40,7 +46,7 @@ Start from the example file:
 server:
   host: "proxy.example.com"
   port: 8443
-  ca_cert: "/path/to/ca.crt"
+  ca_cert: "/path/to/tunnel-ca.crt"
   cert_pin: null
 
 auth:
@@ -66,20 +72,26 @@ transparent:
   host: "0.0.0.0"
   port: 19443
   method: "auto"
+  capture_host: true
+  capture_cidrs: []
+  exclude_cidrs: []
   exclude_pids: []
 
 logging:
   level: "info"
 ```
 
-Notes:
+Field notes:
 
-- `server.host` and `server.port` point to the proxy server's tunnel listener.
-- `server.ca_cert` is optional and should point at the CA that signed the tunnel server certificate.
-- `server.cert_pin` is optional and can be used instead of a CA file.
-- `auth.machine_id` and `auth.token` must match the proxy server's `auth.clients`.
-- `local_proxy.auth_token` can protect the local CONNECT proxy with Basic auth if you need it.
-- `transparent.exclude_pids` is an advanced Windows override for excluding extra processes from WinDivert interception.
+- `server.host` and `server.port` point to the proxy server's tunnel listener
+- `server.ca_cert` is optional and should point at the CA that signed the tunnel server certificate
+- `server.cert_pin` is optional and can be used instead of a CA file
+- `auth.machine_id` and `auth.token` must match a proxy-side `auth.clients` entry
+- `local_proxy.auth_token` can protect the local CONNECT proxy with Basic auth if you need it
+- `transparent.capture_host` controls interception for host-originated HTTPS traffic
+- `transparent.capture_cidrs` lists source CIDRs on the same Linux host whose HTTPS traffic should also be redirected
+- `transparent.exclude_cidrs` lists destination CIDRs that must bypass interception
+- `transparent.exclude_pids` is a Windows-oriented manual override for extra WinDivert exclusions
 
 ## Running The Agent
 
@@ -115,7 +127,7 @@ If your packaged release uses a shorter wrapper name such as `heimdall-agent`, t
 
 ## Explicit Proxy Mode
 
-Use this mode when you want per-process routing without changing the whole workstation.
+Use this mode when you want per-process routing without changing the whole machine.
 
 If you want a fuller walkthrough for non-transparent usage, including CI/CD and per-app wrapper patterns, see [Explicit Proxy Guide](explicit-proxy.md).
 
@@ -143,6 +155,11 @@ transparent:
   host: "0.0.0.0"
   port: 19443
   method: "auto"
+  capture_host: true
+  capture_cidrs:
+    - "172.17.0.0/16"
+  exclude_cidrs:
+    - "10.0.0.0/8"
 ```
 
 Then install Heimdall with elevated privileges:
@@ -159,6 +176,27 @@ What `install` does:
 - enables traffic interception unless `--no-interception` is used
 - optionally installs a service when `--service` is provided
 
+### Linux interception scopes
+
+On Linux, transparent mode now supports two scopes on the same machine:
+
+- host-process interception:
+  - traffic originated directly by processes on the runner or workstation host
+- runtime-network interception:
+  - traffic whose source IP comes from configured local bridge or CNI subnets
+
+This is meant for Linux workloads hosted on that machine, such as:
+
+- Docker bridge networks
+- Podman bridge networks
+- local CNI-managed runtime subnets on the same host
+
+It does not claim interception for:
+
+- remote Kubernetes clusters
+- external hosts
+- traffic originating on a different machine
+
 ### Platform notes
 
 - Windows:
@@ -166,9 +204,10 @@ What `install` does:
   - `method: windivert` requires the packet interception path to be available
   - `method: system_proxy` is simpler but only affects apps that honor system proxy settings
 - Linux:
-  - transparent mode uses trust-store installation plus `iptables` and `ip6tables` redirection to the transparent TLS listener
-  - approved outbound IPv4 and IPv6 HTTPS traffic is redirected into the transparent listener
-  - root-owned client processes are excluded from interception to avoid tunnel loops
+  - transparent mode uses trust-store installation plus `iptables` and `ip6tables` redirect rules
+  - host traffic is redirected from `nat OUTPUT`
+  - configured runtime subnets are redirected from `nat PREROUTING`
+  - the agent excludes its own host-side traffic by UID to avoid tunnel loops
   - elevated privileges are required for install and uninstall
 
 ## Service Management
@@ -183,7 +222,13 @@ heimdall-local-agent service stop
 heimdall-local-agent service uninstall
 ```
 
-For end-user release packages, document whether the installer wires this up automatically or leaves it as a manual step.
+For self-hosted CI or demo runners, prefer:
+
+- a root-owned config file such as `/etc/heimdall/agent-config.yaml`
+- `0600` permissions on that config file
+- the GitHub runner itself running as a different unprivileged user
+
+That keeps the runner user from reading the Heimdall setup directly while still letting the machine route HTTPS through the transparent listener.
 
 ## Health And Troubleshooting
 
@@ -193,9 +238,12 @@ Useful checks:
 
 - `heimdall-local-agent test --config ...` verifies tunnel connection and auth
 - `heimdall-local-agent status` queries the health endpoint
+- `heimdall-local-agent service status` reports service install state, including whether interception was configured during install
 - if traffic is not tunneling, confirm the proxy server recognizes the `machine_id`
-- if transparent mode is enabled but apps are bypassing Heimdall on Linux, test from a non-root shell with both `curl -4` and `curl -6`
-- if transparent mode is enabled but apps are bypassing Heimdall, confirm the chosen interception method is actually active on that OS
+- if transparent mode is enabled but Linux host traffic bypasses Heimdall, test from a non-root shell with both `curl -4` and `curl -6`
+- if runtime traffic bypasses Heimdall on Linux, confirm the runtime subnet appears in `transparent.capture_cidrs`
+- if a destination must bypass interception, add its subnet to `transparent.exclude_cidrs`
+- if transparent mode is enabled but apps are still bypassing Heimdall, confirm the chosen interception method is actually active on that OS
 
 ## Release Guidance
 

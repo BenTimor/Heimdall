@@ -31,7 +31,7 @@ describe("ServerConfigSchema", () => {
       cache: { enabled: false, defaultTtlSeconds: 60 },
       auth: {
         enabled: true,
-        clients: [{ machineId: "m1", token: "t1" }],
+        clients: [{ machineId: "m1", token: "t1", sourceCidrs: ["203.0.113.0/24"] }],
       },
       bypass: { domains: ["*.corp"] },
       aws: { region: "eu-west-1" },
@@ -45,6 +45,7 @@ describe("ServerConfigSchema", () => {
     expect(result.proxy.port).toBe(9090);
     expect(result.secrets.MY_KEY.provider).toBe("env");
     expect(result.auth.clients).toHaveLength(1);
+    expect(result.auth.clients[0].sourceCidrs).toEqual(["203.0.113.0/24"]);
     expect(result.proxy.connectionPool.maxPerHost).toBe(8);
     expect(result.logging.latency.enabled).toBe(true);
   });
@@ -56,6 +57,11 @@ describe("ServerConfigSchema", () => {
     expect(result.cache.enabled).toBe(true);
     expect(result.cache.defaultTtlSeconds).toBe(300);
     expect(result.auth.enabled).toBe(true);
+    expect(
+      ServerConfigSchema.parse({
+        auth: { clients: [{ machineId: "m1", token: "t1" }] },
+      }).auth.clients[0].sourceCidrs
+    ).toEqual([]);
     expect(result.aws.region).toBe("us-east-1");
     expect(result.proxy.tcpNoDelay).toBe(true);
     expect(result.proxy.connectionPool.enabled).toBe(true);

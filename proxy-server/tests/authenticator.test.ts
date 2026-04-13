@@ -6,7 +6,11 @@ import type { AuthConfig } from "../src/config/schema.js";
 const config: AuthConfig = {
   enabled: true,
   clients: [
-    { machineId: "dev-laptop-1", token: "secret-token-123" },
+    {
+      machineId: "dev-laptop-1",
+      token: "secret-token-123",
+      sourceCidrs: ["203.0.113.10/32"],
+    },
     { machineId: "ci-runner-7", token: "another-token-456" },
   ],
 };
@@ -21,7 +25,18 @@ describe("Authenticator", () => {
   it("authenticates valid credentials", () => {
     const auth = new Authenticator({ enabled: true }, backend);
     const result = auth.authenticate(
-      makeBasicHeader("dev-laptop-1", "secret-token-123")
+      makeBasicHeader("dev-laptop-1", "secret-token-123"),
+      { sourceIp: "203.0.113.10" },
+    );
+    expect(result.authenticated).toBe(true);
+    expect(result.machineId).toBe("dev-laptop-1");
+  });
+
+  it("accepts IPv4-mapped source addresses for restricted clients", () => {
+    const auth = new Authenticator({ enabled: true }, backend);
+    const result = auth.authenticate(
+      makeBasicHeader("dev-laptop-1", "secret-token-123"),
+      { sourceIp: "::ffff:203.0.113.10" },
     );
     expect(result.authenticated).toBe(true);
     expect(result.machineId).toBe("dev-laptop-1");
@@ -75,5 +90,24 @@ describe("Authenticator", () => {
     );
     expect(result.authenticated).toBe(false);
     expect(result.error).toContain("Unknown machine ID");
+  });
+
+  it("rejects source-restricted clients when source IP is missing", () => {
+    const auth = new Authenticator({ enabled: true }, backend);
+    const result = auth.authenticate(
+      makeBasicHeader("dev-laptop-1", "secret-token-123")
+    );
+    expect(result.authenticated).toBe(false);
+    expect(result.error).toBe("Source IP not allowed");
+  });
+
+  it("rejects source-restricted clients from non-allowed IPs", () => {
+    const auth = new Authenticator({ enabled: true }, backend);
+    const result = auth.authenticate(
+      makeBasicHeader("dev-laptop-1", "secret-token-123"),
+      { sourceIp: "198.51.100.8" },
+    );
+    expect(result.authenticated).toBe(false);
+    expect(result.error).toBe("Source IP not allowed");
   });
 });

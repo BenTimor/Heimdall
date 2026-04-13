@@ -140,6 +140,12 @@ pub struct TransparentConfig {
     pub host: String,
     #[serde(default)]
     pub method: InterceptionMethod,
+    #[serde(default = "default_capture_host")]
+    pub capture_host: bool,
+    #[serde(default)]
+    pub capture_cidrs: Vec<String>,
+    #[serde(default)]
+    pub exclude_cidrs: Vec<String>,
     /// PIDs to exclude from WinDivert interception (manual override).
     /// The agent auto-detects the proxy server PID; use this for additional exclusions.
     #[serde(default)]
@@ -153,11 +159,17 @@ impl Default for TransparentConfig {
             port: default_transparent_port(),
             host: default_all_interfaces(),
             method: InterceptionMethod::default(),
+            capture_host: default_capture_host(),
+            capture_cidrs: Vec::new(),
+            exclude_cidrs: Vec::new(),
             exclude_pids: Vec::new(),
         }
     }
 }
 
+fn default_capture_host() -> bool {
+    true
+}
 fn default_transparent_port() -> u16 {
     19443
 }

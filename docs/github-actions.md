@@ -2,288 +2,230 @@
 
 This guide shows how to use Heimdall placeholders in GitHub Actions without storing the real upstream API secrets in GitHub.
 
-The short version:
+For the public `opencode` demo, the recommended path is now an ephemeral self-hosted Linux runner with Heimdall preinstalled on the host in transparent mode. The workflow keeps using the upstream OpenCode GitHub Action, but the Heimdall client credential lives only on the disposable runner host, not in GitHub secrets or workflow environment variables.
 
-- GitHub-hosted runners should use the Heimdall local agent in explicit proxy mode so traffic reaches the server over the existing TLS tunnel.
-- self-hosted runners on a private network can point `HTTPS_PROXY` straight at the Heimdall proxy server if that connection is already transport-protected by your network design
-- in both cases, your workflow can keep using placeholder values such as `__OPENAI_API_KEY__`
+## Short Version
 
-## Choose The Right Topology
+- public demo or security-sensitive showcase:
+  - use an ephemeral self-hosted Linux runner
+  - install Heimdall on the runner host as a root-owned service
+  - enable transparent interception on the host
+  - allowlist the runner egress IP or CIDR on the Heimdall server with `sourceCidrs`
+  - keep `OPENROUTER_API_KEY` and similar values as placeholders in the workflow
+- ordinary GitHub-hosted runner usage:
+  - run the local agent inside the job
+  - keep transparent mode disabled
+  - export `HTTPS_PROXY` to the local agent
+- direct proxy to the Heimdall server:
+  - only for private self-hosted networks where the proxy hop is already transport-protected
 
-### GitHub-hosted runners
+## Recommended Topology For The Public Demo
 
-Use this when your jobs run on `ubuntu-latest`, `ubuntu-24.04`, or other GitHub-hosted machines.
+The public demo should use this model:
 
-Recommended path:
+1. build a dedicated Linux runner image
+2. install the GitHub runner as an unprivileged user such as `gha-runner`
+3. install Heimdall as a host service owned by `root` or a dedicated `heimdall` user
+4. store the Heimdall config at `/etc/heimdall/agent-config.yaml` with `0600` permissions
+5. install the Heimdall CA into the machine trust store during image build or first boot
+6. enable transparent interception before the runner accepts jobs
+7. register the runner as ephemeral so it handles one job and is then destroyed
 
-1. start `heimdall-local-agent` inside the job
-2. keep `transparent.enabled: false`
-3. point the job at `http://127.0.0.1:19080`
-4. let the local agent tunnel matching traffic to the Heimdall server over TLS
+This keeps the upstream OpenCode action unchanged while moving the reusable Heimdall credential out of GitHub and into a disposable machine boundary.
 
-Why this is the recommended path:
+The repository's own [`opencode` workflow](../.github/workflows/opencode.yml) now follows this shape:
 
-- the tunnel link is already TLS-protected
-- the proxy auth token does not travel over the public internet in a plain HTTP proxy request
-- the rest of the job can still use ordinary `HTTPS_PROXY` semantics
+- `runs-on` points at a self-hosted runner label
+- the workflow only checks that the host-side Heimdall service is healthy
+- the workflow does not build or configure Heimdall inside the job
+- the workflow does not export `HTTP_PROXY` or `HTTPS_PROXY`
+- the workflow passes a placeholder `OPENROUTER_API_KEY` directly to the upstream OpenCode action
 
-### Self-hosted runners on a private network
+## Server-Side Hardening Checklist
 
-Use this when the runner and the Heimdall proxy server already communicate over a trusted path such as:
+For the demo deployment:
 
-- the same VPC or subnet
-- a private VPN
-- an internal load balancer or other transport-protected network edge
+- use a dedicated Heimdall deployment, or at minimum a dedicated demo-only secret scope
+- keep per-secret `allowedDomains` restrictions enabled
+- create a dedicated demo client entry under `auth.clients`
+- set `sourceCidrs` on that client to the runner's fixed public egress IP or private CIDR
+- enable the tunnel listener if the local agent connects through the tunnel
 
-In that case you can skip the local agent and point the job directly at the Heimdall proxy listener.
-
-Do not use the direct `http://machineId:token@proxy.example.com:8080` pattern from a public GitHub-hosted runner unless you have separately protected that proxy hop. Heimdall's built-in direct proxy listener is an HTTP CONNECT proxy, not a TLS listener.
-
-## Server-Side Checklist
-
-For GitHub-hosted runners:
-
-- enable the Heimdall tunnel server
-- set `proxy.publicHost` to the hostname clients can actually reach
-- generate the tunnel certificate with `pnpm run generate-tunnel-cert <hostname-or-ip>`
-- create a dedicated `auth.clients` entry for each GitHub environment or workflow scope
-- make sure the real upstream secrets exist on the Heimdall server through `env`, AWS Secrets Manager, or stored secrets
-
-Example `auth.clients` entries:
+Example:
 
 ```yaml
 auth:
   enabled: true
   clients:
-    - machineId: "github-actions-myrepo-staging"
+    - machineId: "github-actions-opencode-demo"
       token: "replace-with-a-long-random-token"
-    - machineId: "github-actions-myrepo-production"
-      token: "replace-with-a-different-token"
+      sourceCidrs:
+        - "203.0.113.10/32"
 ```
 
-Recommended naming pattern:
+What `sourceCidrs` protects:
 
-- one `machineId` per repository and environment
-- rotate tokens independently
-- disable or delete only the affected entry if one workflow scope is compromised
+- if the demo credential leaks into logs or model output, it only works from the allowed runner network
+- the same policy applies to direct proxy auth and tunnel auth
 
-## GitHub-Side Values
+What it does not protect:
 
-Store these in GitHub Actions secrets or environment-scoped secrets:
+- a job already running on the runner can still use the demo-scoped credential during that run
+- this is why the demo should use isolated, low-value secrets and a disposable runner
 
-- `HEIMDALL_CA_CERT`: the Heimdall MITM CA certificate in PEM format
-- `HEIMDALL_TOKEN`: the auth token that matches the selected `machineId`
+## Runner Image Provisioning
 
-Store these as variables or environment-scoped variables:
+Recommended image contents:
 
-- `HEIMDALL_TUNNEL_HOST`: the public hostname of the Heimdall tunnel listener
-- `HEIMDALL_TUNNEL_PORT`: usually `8443`
-- `HEIMDALL_MACHINE_ID`: for example `github-actions-myrepo-staging`
+- GitHub Actions runner installed as `gha-runner`
+- Heimdall local agent binary installed on the host
+- systemd service for Heimdall enabled at boot
+- `/etc/heimdall/agent-config.yaml` owned by `root:root` with `0600`
+- Heimdall MITM CA installed into the OS trust store
+- transparent interception installed before the runner process starts accepting jobs
 
-If you use the simpler direct-proxy model on a private self-hosted runner, store:
-
-- `HEIMDALL_PROXY_URL`: for example `http://machineId:token@proxy.internal.example.com:8080`
-- `HEIMDALL_CA_CERT`: the Heimdall CA PEM
-
-If the direct proxy URL contains special characters in the credentials, percent-encode them before saving the URL.
-
-## Reusable Runner Setup Action
-
-This repository now includes a small reusable action at `.github/actions/setup-heimdall/`.
-
-Use it in one of these ways:
-
-- inside this repository: `uses: ./.github/actions/setup-heimdall`
-- from another repository: `uses: BenTimor/Heimdall/.github/actions/setup-heimdall@<tag-or-commit>`
-
-Prefer a pinned tag or commit SHA instead of `@main` in production workflows.
-
-It:
-
-- writes the Heimdall CA to the runner
-- creates a merged CA bundle for OpenSSL-based tools
-- exports `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and lowercase equivalents
-- exports `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, and `PIP_CERT`
-
-That is enough for most `curl`, Node.js, Python, Git, and Go workloads.
-
-If you run JVM-based tools, add the Heimdall CA to a Java truststore separately. The action does not mutate Java's `cacerts`.
-
-## Recommended Workflow For GitHub-Hosted Ubuntu Runners
-
-This example builds the local agent from source in the job. If you publish a Linux release artifact, you can replace the build step with a download step.
-
-The repository's own [`opencode` workflow](../.github/workflows/opencode.yml) now follows this same pattern: it starts the local agent, exports the Heimdall proxy env, and then runs the upstream `opencode` GitHub Action with your placeholder-valued `OPENROUTER_API_KEY`.
+Recommended local-agent config for the host service:
 
 ```yaml
-name: heimdall-example
+server:
+  host: "proxy.example.com"
+  port: 8443
+  ca_cert: "/etc/heimdall/tunnel-ca.crt"
 
-on:
-  workflow_dispatch:
+auth:
+  machine_id: "github-actions-opencode-demo"
+  token: "replace-with-the-demo-token"
 
-jobs:
-  placeholder-smoke-test:
-    runs-on: ubuntu-latest
-    environment: staging
+local_proxy:
+  host: "127.0.0.1"
+  port: 19080
 
-    steps:
-      - uses: actions/checkout@v4
+health:
+  host: "127.0.0.1"
+  port: 19876
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+transparent:
+  enabled: true
+  host: "0.0.0.0"
+  port: 19443
+  method: "auto"
+  capture_host: true
+  capture_cidrs: []
+  exclude_cidrs: []
 
-      - name: Build Heimdall local agent
-        run: cargo build --release --manifest-path local-agent/Cargo.toml
-
-      - name: Write Heimdall agent config
-        shell: bash
-        run: |
-          cat > "$RUNNER_TEMP/heimdall-agent.yaml" <<EOF
-          server:
-            host: "${{ vars.HEIMDALL_TUNNEL_HOST }}"
-            port: ${{ vars.HEIMDALL_TUNNEL_PORT }}
-            ca_cert: "$RUNNER_TEMP/heimdall-ca.crt"
-
-          auth:
-            machine_id: "${{ vars.HEIMDALL_MACHINE_ID }}"
-            token: "${{ secrets.HEIMDALL_TOKEN }}"
-
-          local_proxy:
-            host: "127.0.0.1"
-            port: 19080
-
-          health:
-            host: "127.0.0.1"
-            port: 19876
-
-          transparent:
-            enabled: false
-
-          logging:
-            level: "info"
-          EOF
-
-      - name: Write Heimdall CA
-        shell: bash
-        run: |
-          printf '%s\n' "${{ secrets.HEIMDALL_CA_CERT }}" > "$RUNNER_TEMP/heimdall-ca.crt"
-
-      - name: Start Heimdall local agent
-        shell: bash
-        run: |
-          nohup ./local-agent/target/release/heimdall-local-agent \
-            run \
-            --config "$RUNNER_TEMP/heimdall-agent.yaml" \
-            > "$RUNNER_TEMP/heimdall-agent.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/heimdall-agent.pid"
-
-      - name: Wait for Heimdall local proxy
-        shell: bash
-        run: |
-          for attempt in $(seq 1 30); do
-            if curl --silent --fail http://127.0.0.1:19876/health > /dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          cat "$RUNNER_TEMP/heimdall-agent.log" || true
-          exit 1
-
-      - name: Verify tunnel auth
-        shell: bash
-        run: |
-          ./local-agent/target/release/heimdall-local-agent \
-            test \
-            --config "$RUNNER_TEMP/heimdall-agent.yaml"
-
-      - name: Export Heimdall proxy env
-        uses: BenTimor/Heimdall/.github/actions/setup-heimdall@main
-        with:
-          proxy_url: http://127.0.0.1:19080
-          ca_cert: ${{ secrets.HEIMDALL_CA_CERT }}
-
-      - name: Smoke test a placeholder
-        env:
-          OPENAI_API_KEY: __OPENAI_API_KEY__
-        run: |
-          curl https://api.openai.com/v1/models \
-            -H "Authorization: Bearer ${OPENAI_API_KEY}"
-
-      - name: Run your real workload with placeholders
-        env:
-          OPENAI_API_KEY: __OPENAI_API_KEY__
-          ANTHROPIC_API_KEY: __ANTHROPIC_API_KEY__
-        run: |
-          npm ci
-          npm test
-
-      - name: Print Heimdall agent log on failure
-        if: failure()
-        shell: bash
-        run: cat "$RUNNER_TEMP/heimdall-agent.log" || true
-
-      - name: Stop Heimdall local agent
-        if: always()
-        shell: bash
-        run: |
-          if [ -f "$RUNNER_TEMP/heimdall-agent.pid" ]; then
-            kill "$(cat "$RUNNER_TEMP/heimdall-agent.pid")" || true
-          fi
+logging:
+  level: "info"
 ```
 
-Notes:
+If the runner also launches Docker, Podman, or CNI-based workloads on the same machine, add those bridge subnets to `transparent.capture_cidrs`.
 
-- the example uses `OPENAI_API_KEY=__OPENAI_API_KEY__`; the actual secret remains only on the Heimdall server
-- any SDK or CLI that turns that placeholder into an outbound HTTP header can work unchanged
-- non-secret domains still pass through Heimdall without MITM because no secret is configured for them
+Examples:
 
-## Simpler Workflow For Private Self-Hosted Runners
+- Docker default bridge: `172.17.0.0/16`
+- Podman rootful bridge: often `10.88.0.0/16`
+- custom CNI bridge ranges: whatever your runner host allocates locally
 
-If your runner already reaches the Heimdall proxy listener through a trusted internal path, you can skip the local agent:
+Keep `transparent.exclude_cidrs` for destination networks that must bypass interception.
+
+If you want a ready-made starting point for a fresh Ubuntu x64 VPS, this repository now includes:
+
+- [`scripts/demo-runner/bootstrap-ubuntu-runner.sh`](../scripts/demo-runner/bootstrap-ubuntu-runner.sh)
+- [`scripts/demo-runner/example.env`](../scripts/demo-runner/example.env)
+
+That helper script provisions the runner host only. It does not deploy the Heimdall proxy server itself.
+
+## Workflow Example For The Self-Hosted Transparent Demo
 
 ```yaml
-name: heimdall-direct-example
+name: opencode
 
 on:
-  workflow_dispatch:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
 
 jobs:
-  placeholder-smoke-test:
-    runs-on: self-hosted
+  opencode:
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - heimdall-demo
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Export Heimdall proxy env
-        uses: BenTimor/Heimdall/.github/actions/setup-heimdall@main
+      - uses: actions/checkout@v6
         with:
-          proxy_url: ${{ secrets.HEIMDALL_PROXY_URL }}
-          ca_cert: ${{ secrets.HEIMDALL_CA_CERT }}
+          persist-credentials: false
 
-      - name: Run with placeholders
+      - name: Validate host Heimdall service
+        run: curl --silent --fail http://127.0.0.1:19876/health > /dev/null
+
+      - name: Run opencode
+        uses: anomalyco/opencode/github@latest
         env:
-          OPENAI_API_KEY: __OPENAI_API_KEY__
-        run: |
-          curl https://api.openai.com/v1/models \
-            -H "Authorization: Bearer ${OPENAI_API_KEY}"
+          OPENROUTER_API_KEY: __OPENROUTER_API_KEY__
+        with:
+          model: openrouter/z-ai/glm-5.1
 ```
 
-This path is operationally simpler, but only use it when the runner-to-proxy hop is already private or otherwise protected.
+Important differences from the older GitHub-hosted setup:
 
-## What Placeholders Can Replace
+- no `HEIMDALL_TOKEN` secret in GitHub
+- no `HEIMDALL_MACHINE_ID` variable in GitHub
+- no `HEIMDALL_TUNNEL_HOST`, `HEIMDALL_TUNNEL_PORT`, or `HEIMDALL_CA_CERT` in the workflow
+- no `id-token: write` permission when you are not using GitHub OIDC bootstrap
+- no `setup-heimdall` action step
+- no `HTTP_PROXY` or `HTTPS_PROXY` export in the workflow
 
-Heimdall currently injects placeholders that appear in outbound HTTP headers.
+## Ephemeral Runner Requirement
 
-That means GitHub Actions works well when:
+Use GitHub's ephemeral self-hosted runner lifecycle for the public demo.
 
-- a tool reads `OPENAI_API_KEY=__OPENAI_API_KEY__` and sends it as `Authorization: Bearer __OPENAI_API_KEY__`
-- a script sends headers such as `X-Api-Key: __SERVICE_API_KEY__`
+That means:
 
-It does not replace placeholders in arbitrary request bodies, files, or local shell variables that never become outbound headers.
+- one runner VM accepts one job
+- after the job, destroy the VM
+- do not reuse the workspace or Heimdall runtime state for the next demo run
 
-## Related Docs
+Why this matters:
 
-- [Explicit Proxy Guide](explicit-proxy.md)
-- [Deployment Guide](deployment.md)
-- [Local Agent Guide](local-agent.md)
-- [Architecture](architecture.md)
+- it limits the lifetime of any leaked demo-scoped material
+- it prevents cross-job persistence in workspaces, logs, or temp files
+- it lets you keep the upstream OpenCode action unchanged while still enforcing strong host isolation
+
+## Linux Transparent Scope
+
+On self-hosted Linux, Heimdall transparent mode now supports two interception scopes on the same host:
+
+- host-process interception for traffic created by the runner host itself
+- runtime-network interception for traffic whose source IP comes from configured local bridge or CNI subnets
+
+This is the intended v1 support boundary:
+
+- host processes on the runner
+- Docker, Podman, or other Linux runtimes that use bridge or CNI subnets on that same runner host
+
+This guide does not claim off-host interception for:
+
+- remote Kubernetes clusters
+- separate container hosts
+- arbitrary external networks
+
+## Fallback: GitHub-Hosted Runners
+
+If you need to run on `ubuntu-latest` or another GitHub-hosted runner, use explicit proxy mode through the local agent inside the job.
+
+That fallback still works well for ordinary users because:
+
+- the tunnel hop is TLS-protected
+- placeholders still keep the real upstream secret out of GitHub
+- the setup does not require self-hosted infrastructure
+
+The tradeoff is that the Heimdall client credential must exist in workflow scope for the duration of that job, so it is not the recommended path for the public demo.
+
+See [Explicit Proxy Guide](explicit-proxy.md) for the explicit-proxy flow and [Local Agent Guide](local-agent.md) for the agent configuration details.

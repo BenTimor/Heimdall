@@ -7,6 +7,7 @@ export interface ClientRow {
   token_hash: string;
   description: string;
   enabled: number;
+  source_cidrs: string;
   created_at: string;
   updated_at: string;
 }
@@ -16,6 +17,7 @@ export interface ClientInfo {
   machineId: string;
   description: string;
   enabled: boolean;
+  sourceCidrs: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -29,25 +31,27 @@ export function generateToken(): string {
 }
 
 export function listClients(db: Database.Database): ClientInfo[] {
-  const rows = db.prepare("SELECT id, machine_id, description, enabled, created_at, updated_at FROM clients ORDER BY id").all() as ClientRow[];
+  const rows = db.prepare("SELECT id, machine_id, description, enabled, source_cidrs, created_at, updated_at FROM clients ORDER BY id").all() as ClientRow[];
   return rows.map(r => ({
     id: r.id,
     machineId: r.machine_id,
     description: r.description,
     enabled: r.enabled === 1,
+    sourceCidrs: JSON.parse(r.source_cidrs || "[]"),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   }));
 }
 
 export function getClientById(db: Database.Database, id: number): ClientInfo | null {
-  const row = db.prepare("SELECT id, machine_id, description, enabled, created_at, updated_at FROM clients WHERE id = ?").get(id) as ClientRow | undefined;
+  const row = db.prepare("SELECT id, machine_id, description, enabled, source_cidrs, created_at, updated_at FROM clients WHERE id = ?").get(id) as ClientRow | undefined;
   if (!row) return null;
   return {
     id: row.id,
     machineId: row.machine_id,
     description: row.description,
     enabled: row.enabled === 1,
+    sourceCidrs: JSON.parse(row.source_cidrs || "[]"),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -57,10 +61,16 @@ export function findClientByMachineId(db: Database.Database, machineId: string):
   return db.prepare("SELECT * FROM clients WHERE machine_id = ?").get(machineId) as ClientRow | null;
 }
 
-export function createClient(db: Database.Database, machineId: string, description: string): { client: ClientInfo; token: string } {
+export function createClient(
+  db: Database.Database,
+  machineId: string,
+  description: string,
+  sourceCidrs: string[] = [],
+): { client: ClientInfo; token: string } {
   const token = generateToken();
   const tokenHash = hashToken(token);
-  db.prepare("INSERT INTO clients (machine_id, token_hash, description) VALUES (?, ?, ?)").run(machineId, tokenHash, description);
+  db.prepare("INSERT INTO clients (machine_id, token_hash, description, source_cidrs) VALUES (?, ?, ?, ?)")
+    .run(machineId, tokenHash, description, JSON.stringify(sourceCidrs));
   const client = findClientByMachineId(db, machineId)!;
   return {
     client: {
@@ -68,6 +78,7 @@ export function createClient(db: Database.Database, machineId: string, descripti
       machineId: client.machine_id,
       description: client.description,
       enabled: client.enabled === 1,
+      sourceCidrs: JSON.parse(client.source_cidrs || "[]"),
       createdAt: client.created_at,
       updatedAt: client.updated_at,
     },
@@ -75,7 +86,11 @@ export function createClient(db: Database.Database, machineId: string, descripti
   };
 }
 
-export function updateClient(db: Database.Database, id: number, updates: { description?: string; enabled?: boolean }): boolean {
+export function updateClient(
+  db: Database.Database,
+  id: number,
+  updates: { description?: string; enabled?: boolean; sourceCidrs?: string[] },
+): boolean {
   const fields: string[] = [];
   const values: any[] = [];
 
@@ -86,6 +101,10 @@ export function updateClient(db: Database.Database, id: number, updates: { descr
   if (updates.enabled !== undefined) {
     fields.push("enabled = ?");
     values.push(updates.enabled ? 1 : 0);
+  }
+  if (updates.sourceCidrs !== undefined) {
+    fields.push("source_cidrs = ?");
+    values.push(JSON.stringify(updates.sourceCidrs));
   }
 
   if (fields.length === 0) return false;

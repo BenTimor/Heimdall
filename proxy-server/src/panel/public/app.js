@@ -438,6 +438,7 @@ async function renderClientsView(el) {
         <tr>
           <th>Machine ID</th>
           <th>Description</th>
+          <th>Source CIDRs</th>
           <th>Status</th>
           <th>Created</th>
           <th>Actions</th>
@@ -449,6 +450,11 @@ async function renderClientsView(el) {
             <td><span class="text-mono">${esc(c.machineId)}</span></td>
             <td>${esc(c.description) || '<span class="text-muted">-</span>'}</td>
             <td>
+              ${c.sourceCidrs?.length
+                ? c.sourceCidrs.map(cidr => `<span class="badge badge-primary" style="margin:1px">${esc(cidr)}</span>`).join(' ')
+                : '<span class="text-muted text-sm">Any</span>'}
+            </td>
+            <td>
               <span class="badge ${c.enabled ? 'badge-success' : 'badge-danger'}">
                 ${c.enabled ? 'Enabled' : 'Disabled'}
               </span>
@@ -456,6 +462,8 @@ async function renderClientsView(el) {
             <td class="text-muted text-sm">${fmtDate(c.createdAt)}</td>
             <td>
               <div class="table-actions">
+                <button class="btn btn-sm btn-ghost" onclick='window._editClient(${JSON.stringify(c).replace(/'/g, "&#39;")})'
+                  title="Edit client">Edit</button>
                 <button class="btn btn-sm btn-ghost" onclick="window._toggleClient(${c.id}, ${c.enabled})"
                   title="${c.enabled ? 'Disable' : 'Enable'}">
                   ${c.enabled ? 'Disable' : 'Enable'}
@@ -471,37 +479,73 @@ async function renderClientsView(el) {
     </table>`;
 }
 
-window._addClient = function () {
-  const body = `
-    <form id="add-client-form">
+function clientFormHtml(client) {
+  const c = client || { machineId: '', description: '', sourceCidrs: [] };
+  const isEdit = !!client;
+  return `
+    <form id="client-form">
       <div class="form-group">
         <label for="ac-mid">Machine ID</label>
-        <input type="text" id="ac-mid" required placeholder="e.g. dev-laptop-01">
+        <input type="text" id="ac-mid" required placeholder="e.g. dev-laptop-01" value="${esc(c.machineId)}" ${isEdit ? 'readonly style="opacity:0.6"' : ''}>
         <p class="form-hint">Unique identifier for this client machine</p>
       </div>
       <div class="form-group">
         <label for="ac-desc">Description</label>
-        <input type="text" id="ac-desc" placeholder="e.g. Alice's development laptop">
+        <input type="text" id="ac-desc" placeholder="e.g. Alice's development laptop" value="${esc(c.description)}">
+      </div>
+      <div class="form-group">
+        <label for="ac-source-cidrs">Allowed Source CIDRs</label>
+        <input type="text" id="ac-source-cidrs" placeholder="e.g. 203.0.113.10/32, 10.0.0.0/24" value="${esc((c.sourceCidrs || []).join(', '))}">
+        <p class="form-hint">Comma-separated. Leave empty to allow this client from any source IP.</p>
       </div>
     </form>`;
+}
+
+window._addClient = function () {
+  const body = clientFormHtml(null);
   const footer = `
     <button class="btn" onclick="closeModal()">Cancel</button>
-    <button class="btn btn-primary" onclick="window._submitAddClient()">Create Client</button>`;
+    <button class="btn btn-primary" onclick="window._submitClient()">Create Client</button>`;
   showModal('Add Client', body, footer);
 };
 
-window._submitAddClient = async function () {
+window._editClient = function (client) {
+  const body = clientFormHtml(client);
+  const footer = `
+    <button class="btn" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="window._submitClient(${client.id})">Save Changes</button>`;
+  showModal('Edit Client', body, footer);
+};
+
+window._submitClient = async function (editId) {
   const machineId = document.getElementById('ac-mid')?.value.trim();
   const description = document.getElementById('ac-desc')?.value.trim() || '';
+  const sourceCidrsRaw = document.getElementById('ac-source-cidrs')?.value.trim() || '';
+  const sourceCidrs = sourceCidrsRaw
+    ? sourceCidrsRaw.split(',').map(cidr => cidr.trim()).filter(Boolean)
+    : [];
   if (!machineId) { showToast('Machine ID is required', 'error'); return; }
 
-  const data = await api('POST', '/clients', { machineId, description });
-  if (data) {
-    closeModal();
-    showTokenModal(data.token, 'New Client Token');
-    // Refresh list after modal closes (user will close it)
-    const viewEl = document.getElementById('view');
-    if (viewEl) renderClientsView(viewEl);
+  if (editId) {
+    const data = await api('PUT', `/clients/${editId}`, { description, sourceCidrs });
+    if (data) {
+      closeModal();
+      showToast('Client updated');
+      const viewEl = document.getElementById('view');
+      if (viewEl) renderClientsView(viewEl);
+    }
+    return;
+  }
+
+  const data = await api('POST', '/clients', { machineId, description, sourceCidrs });
+  if (!data) return;
+
+  closeModal();
+  showTokenModal(data.token, 'New Client Token');
+  // Refresh list after modal closes (user will close it)
+  const viewEl = document.getElementById('view');
+  if (viewEl) {
+    renderClientsView(viewEl);
   }
 };
 

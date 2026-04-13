@@ -164,7 +164,8 @@ For GitHub Actions:
 
 - create dedicated `auth.clients` entries per repository and environment such as `github-actions-myrepo-staging`
 - for GitHub-hosted runners, expose the tunnel listener and use the local agent in explicit proxy mode inside the job
-- for self-hosted runners on a private network, you may use the direct proxy listener instead
+- for self-hosted public demos, prefer an ephemeral runner with the local agent preinstalled as a host service in transparent mode
+- if you already have a private transport-protected path, you may still use the direct proxy listener instead
 - share [GitHub Actions](github-actions.md) with the workflow owners
 
 ## 6. Admin panel

@@ -339,7 +339,7 @@ fn cmd_install(
                     interception_port
                 );
                 std::io::stdout().flush().ok();
-                match ops.enable_interception(interception_port) {
+                match ops.enable_interception(&cfg.transparent, interception_port) {
                     Ok(()) => {
                         install_state.interception_enabled = true;
                         summary.push(install_interception_summary());
@@ -561,7 +561,15 @@ fn cmd_service(action: ServiceCommand) -> Result<()> {
         }
         ServiceCommand::Status => {
             let installed = ops.is_service_installed()?;
-            let interception = ops.is_interception_active()?;
+            let install_state = state::InstallState::load()?;
+            let interception_status = match install_state
+                .as_ref()
+                .map(|state| state.interception_enabled)
+            {
+                Some(true) => "configured",
+                Some(false) => "disabled",
+                None => "unknown",
+            };
 
             println!(
                 "Service installed: {}",
@@ -572,11 +580,11 @@ fn cmd_service(action: ServiceCommand) -> Result<()> {
                 if installed { "enabled" } else { "disabled" }
             );
             println!(
-                "Traffic interception: {}",
-                if interception { "active" } else { "inactive" }
+                "Traffic interception (install state): {}",
+                interception_status
             );
 
-            if let Some(state) = state::InstallState::load()? {
+            if let Some(state) = install_state {
                 println!("Install state:");
                 println!("  Installed at: {}", state.installed_at);
                 println!(

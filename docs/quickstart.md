@@ -119,6 +119,9 @@ transparent:
   host: "0.0.0.0"
   port: 19443
   method: "auto"
+  capture_host: true
+  capture_cidrs: []
+  exclude_cidrs: []
 ```
 
 The `machine_id` and `token` must match an entry in the proxy server's `auth.clients`.
@@ -150,6 +153,8 @@ This step:
 Linux notes:
 
 - transparent mode redirects outbound IPv4 and IPv6 traffic with `iptables` and `ip6tables`
+- `capture_host: true` covers host-originated traffic on that machine
+- `capture_cidrs` can also cover local Docker, Podman, or CNI bridge subnets on the same host
 - root-owned client processes are excluded from interception to avoid tunnel loops
 - for VPS or server validation, use a non-root shell for transparent-mode smoke tests or prefer [Explicit Proxy Guide](explicit-proxy.md)
 

@@ -13,15 +13,12 @@ jobs:
       startsWith(github.event.comment.body, '/oc') ||
       contains(github.event.comment.body, ' /opencode') ||
       startsWith(github.event.comment.body, '/opencode')
-    runs-on: ubuntu-latest
-    env:
-      HEIMDALL_CA_CERT: ${{ secrets.HEIMDALL_CA_CERT }}
-      HEIMDALL_MACHINE_ID: ${{ vars.HEIMDALL_MACHINE_ID }}
-      HEIMDALL_TOKEN: ${{ secrets.HEIMDALL_TOKEN }}
-      HEIMDALL_TUNNEL_HOST: ${{ vars.HEIMDALL_TUNNEL_HOST }}
-      HEIMDALL_TUNNEL_PORT: ${{ vars.HEIMDALL_TUNNEL_PORT }}
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - heimdall-demo
     permissions:
-      id-token: write
       contents: read
       pull-requests: read
       issues: read
@@ -31,117 +28,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Validate Heimdall configuration
+      - name: Validate runner-hosted Heimdall service
         shell: bash
         run: |
-          missing=()
-          for name in \
-            HEIMDALL_CA_CERT \
-            HEIMDALL_MACHINE_ID \
-            HEIMDALL_TOKEN \
-            HEIMDALL_TUNNEL_HOST \
-            HEIMDALL_TUNNEL_PORT
-          do
-            if [ -z "${!name}" ]; then
-              missing+=("$name")
-            fi
-          done
-
-          if [ "${#missing[@]}" -gt 0 ]; then
-            echo "Missing required Heimdall GitHub Actions secrets/vars: ${missing[*]}" >&2
-            exit 1
-          fi
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build Heimdall local agent
-        run: cargo build --release --manifest-path local-agent/Cargo.toml
-
-      - name: Write Heimdall CA
-        shell: bash
-        run: |
-          printf '%s\n' "$HEIMDALL_CA_CERT" > "$RUNNER_TEMP/heimdall-ca.crt"
-
-      - name: Write Heimdall agent config
-        shell: bash
-        run: |
-          cat > "$RUNNER_TEMP/heimdall-agent.yaml" <<EOF
-          server:
-            host: "$HEIMDALL_TUNNEL_HOST"
-            port: $HEIMDALL_TUNNEL_PORT
-            ca_cert: "$RUNNER_TEMP/heimdall-ca.crt"
-
-          auth:
-            machine_id: "$HEIMDALL_MACHINE_ID"
-            token: "$HEIMDALL_TOKEN"
-
-          local_proxy:
-            host: "127.0.0.1"
-            port: 19080
-
-          health:
-            host: "127.0.0.1"
-            port: 19876
-
-          transparent:
-            enabled: false
-
-          logging:
-            level: "info"
-          EOF
-
-      - name: Test Heimdall tunnel authentication
-        shell: bash
-        run: |
-          ./local-agent/target/release/heimdall-local-agent \
-            test \
-            --config "$RUNNER_TEMP/heimdall-agent.yaml"
-
-      - name: Start Heimdall local agent
-        shell: bash
-        run: |
-          nohup ./local-agent/target/release/heimdall-local-agent \
-            run \
-            --config "$RUNNER_TEMP/heimdall-agent.yaml" \
-            > "$RUNNER_TEMP/heimdall-agent.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/heimdall-agent.pid"
-
-      - name: Wait for Heimdall local proxy
-        shell: bash
-        run: |
-          for attempt in $(seq 1 30); do
-            if curl --silent --fail http://127.0.0.1:19876/health > /dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-
-          cat "$RUNNER_TEMP/heimdall-agent.log" || true
-          exit 1
-
-      - name: Export Heimdall proxy env
-        uses: ./.github/actions/setup-heimdall
-        with:
-          proxy_url: http://127.0.0.1:19080
-          ca_cert: ${{ secrets.HEIMDALL_CA_CERT }}
+          curl --silent --fail http://127.0.0.1:19876/health > /dev/null
 
       - name: Run opencode
         uses: anomalyco/opencode/github@latest
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_API_KEY: __OPENROUTER_API_KEY__
         with:
           model: openrouter/z-ai/glm-5.1
 
-      - name: Print Heimdall agent log on failure
+      - name: Print Heimdall service status on failure
         if: failure()
         shell: bash
-        run: cat "$RUNNER_TEMP/heimdall-agent.log" || true
-
-      - name: Stop Heimdall local agent
-        if: always()
-        shell: bash
         run: |
-          if [ -f "$RUNNER_TEMP/heimdall-agent.pid" ]; then
-            kill "$(cat "$RUNNER_TEMP/heimdall-agent.pid")" || true
-          fi
+          systemctl status heimdall-agent --no-pager || true
+          journalctl -u heimdall-agent -n 200 --no-pager || true

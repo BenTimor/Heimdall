@@ -2,16 +2,20 @@
 
 This guide covers Heimdall's non-transparent mode, where you route traffic explicitly with `HTTPS_PROXY` instead of changing machine-wide network behavior.
 
-Use this mode when you want a narrower blast radius or when you control environment variables but not the full machine.
+Explicit proxy mode is still the right fallback for:
 
-If you are specifically setting up GitHub Actions, read [GitHub Actions](github-actions.md) as well. GitHub-hosted runners should normally use explicit proxy mode through the local agent and TLS tunnel, not the direct proxy listener.
+- GitHub-hosted runners
+- narrower rollouts where you only want to wrap one command or one app
+- CI environments where machine-wide interception is not available
+
+For the public OpenCode demo, the recommended design is no longer explicit proxy mode. Use the self-hosted transparent runner design from [GitHub Actions](github-actions.md) instead.
 
 ## Good Fits For Explicit Proxy Mode
 
 - wrapping a specific CLI, desktop app, or script without affecting the whole workstation
+- GitHub-hosted Actions jobs that cannot rely on self-hosted infrastructure
 - CI/CD pipelines where you can set env vars but cannot install system-wide interception rules
 - containers or ephemeral environments where machine-wide install steps are undesirable
-- Linux VPS or server environments where the workload runs as `root` or transparent interception is not the right fit
 - phased rollouts where you want to validate Heimdall on a few commands before enabling transparent mode
 
 ## Two Variants
@@ -20,7 +24,10 @@ If you are specifically setting up GitHub Actions, read [GitHub Actions](github-
   - best when you still want the authenticated tunnel and local workstation daemon
   - the recommended choice for GitHub-hosted runners because the tunnel hop is TLS-protected
 - explicit proxy directly to the proxy server
-  - useful for self-hosted CI jobs on private networks, single-machine setups, or environments where the local agent adds no value
+  - useful for private self-hosted networks where the proxy hop is already transport-protected
+  - simpler than running the local agent inside every job
+
+If your actual goal is "make all HTTPS from this self-hosted machine pass through Heimdall without exporting proxy env vars," use transparent mode instead. See [Local Agent Guide](local-agent.md).
 
 ## Option A: Explicit Proxy Through The Local Agent
 
@@ -100,24 +107,23 @@ Example wrapper pattern:
 HTTPS_PROXY=http://127.0.0.1:19080 your-command
 ```
 
-This is a good fit when you want to wrap one tool, one shell session, one IDE launcher, or one integration test command.
-
 ## Option B: Explicit Proxy Directly To The Proxy Server
 
 You can also skip the local agent and point `HTTPS_PROXY` straight at the Heimdall proxy server.
 
 This is often the simplest model for:
 
-- self-hosted CI/CD runners on a private or otherwise transport-protected network path
+- private self-hosted CI/CD runners
 - ephemeral build containers
-- single-machine evaluations
-- environments where you control env vars but cannot run the local agent as a background process
+- single-machine evaluations on an internal network
+- environments where you control env vars but do not want a local daemon
 
 Important:
 
 - the direct Heimdall proxy listener is an HTTP CONNECT proxy, not a TLS listener
 - if the proxy hop crosses the public internet, the proxy auth credentials travel in a plain HTTP proxy request
-- for GitHub-hosted runners, prefer [Option A](#option-a-explicit-proxy-through-the-local-agent) and the [GitHub Actions guide](github-actions.md)
+- for GitHub-hosted runners, prefer [Option A](#option-a-explicit-proxy-through-the-local-agent)
+- for the public demo, prefer the self-hosted transparent runner design from [GitHub Actions](github-actions.md)
 
 ### 1. Configure client auth
 
@@ -126,6 +132,8 @@ Use a proxy URL that includes the Heimdall `machineId` and `token`:
 ```bash
 HTTPS_PROXY=http://machineId:token@proxy.example.com:8080
 ```
+
+If you are protecting that client with `sourceCidrs`, the credential will still only work from the allowed network.
 
 ### 2. Provide CA trust per process
 
@@ -143,16 +151,19 @@ export HTTPS_PROXY=http://machineId:token@proxy.example.com:8080
 export REQUESTS_CA_BUNDLE=/path/to/heimdall-ca.crt
 ```
 
-This pattern works well when the environment is disposable and you only need env vars, not a machine-level install.
-
 ## Tradeoffs
 
 Explicit proxy mode is usually easier to scope and easier to roll out gradually, but it has one important limitation: every participating process must be opted in.
 
-Transparent mode is a better fit when your goal is "it just works" across the workstation after a one-time install.
+Transparent mode is the better fit when your goal is:
+
+- "it just works" across the machine after a one-time install
+- "all HTTPS from this self-hosted runner should pass through Heimdall"
+- "the workflow should not need to carry proxy env vars"
 
 ## Related Docs
 
+- [GitHub Actions](github-actions.md)
 - [Quick Start](quickstart.md)
 - [Deployment Guide](deployment.md)
 - [Local Agent Guide](local-agent.md)

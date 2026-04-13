@@ -160,7 +160,7 @@ export class TunnelServer {
             authTimeout = null;
           }
 
-          machineId = this.handleAuth(socket, frame);
+          machineId = this.handleAuth(socket, frame, socket.remoteAddress);
           if (!machineId) return; // auth failed, socket destroyed
           continue;
         }
@@ -184,7 +184,7 @@ export class TunnelServer {
     });
   }
 
-  private handleAuth(socket: tls.TLSSocket, frame: Frame): string | null {
+  private handleAuth(socket: tls.TLSSocket, frame: Frame, sourceIp?: string): string | null {
     const { authenticator, logger } = this.deps;
 
     // Payload format: "machineId:token"
@@ -202,10 +202,10 @@ export class TunnelServer {
 
     // Build a Basic auth header and use the existing authenticator
     const basicHeader = `Basic ${Buffer.from(`${machineId}:${token}`).toString("base64")}`;
-    const result = authenticator.authenticate(basicHeader);
+    const result = authenticator.authenticate(basicHeader, { sourceIp });
 
     if (!result.authenticated) {
-      logger.warn({ machineId, error: result.error }, "Tunnel auth failed");
+      logger.warn({ machineId, error: result.error, sourceIp }, "Tunnel auth failed");
       socket.write(encodeFrame(0, FrameType.AUTH_FAIL, Buffer.from(result.error ?? "auth failed")));
       socket.destroy();
       return null;
@@ -344,4 +344,3 @@ export class TunnelServer {
     }
   }
 }
-

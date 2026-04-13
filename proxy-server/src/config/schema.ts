@@ -12,6 +12,7 @@ export type SecretConfig = z.infer<typeof SecretConfigSchema>;
 export const AuthClientSchema = z.object({
   machineId: z.string(),
   token: z.string(),
+  sourceCidrs: z.array(z.string()).default([]),
 });
 
 export type AuthClient = z.infer<typeof AuthClientSchema>;

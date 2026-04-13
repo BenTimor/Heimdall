@@ -4,28 +4,45 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 
 use super::PlatformOps;
+use crate::config::TransparentConfig;
 use crate::state::RuntimeTrustState;
 
 const SERVICE_NAME: &str = "heimdall-agent";
 const UNIT_FILE_PATH: &str = "/etc/systemd/system/heimdall-agent.service";
 const CA_CERT_PATH: &str = "/usr/local/share/ca-certificates/heimdall-proxy.crt";
 const IPTABLES_COMMENT: &str = "heimdall-redirect";
-const NAT_OUTPUT_LIST_ARGS: [&str; 6] = ["-t", "nat", "-L", "OUTPUT", "-n", "--line-numbers"];
+const OUTPUT_CHAIN: &str = "OUTPUT";
+const PREROUTING_CHAIN: &str = "PREROUTING";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct InterceptionTable {
     program: &'static str,
     family: &'static str,
+    is_ipv6: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuleSpec {
+    chain: &'static str,
+    args: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RuleLocation {
+    chain: &'static str,
+    line_number: u32,
 }
 
 const INTERCEPTION_TABLES: [InterceptionTable; 2] = [
     InterceptionTable {
         program: "iptables",
         family: "IPv4",
+        is_ipv6: false,
     },
     InterceptionTable {
         program: "ip6tables",
         family: "IPv6",
+        is_ipv6: true,
     },
 ];
 
@@ -64,12 +81,29 @@ fn get_uid() -> Result<String> {
 }
 
 impl PlatformOps for LinuxPlatform {
-    fn enable_interception(&self, transparent_port: u16) -> Result<()> {
+    fn enable_interception(
+        &self,
+        transparent_config: &TransparentConfig,
+        _local_proxy_port: u16,
+    ) -> Result<()> {
         let uid = get_uid()?;
+        let rule_count = interception_tables()
+            .iter()
+            .map(|table| build_rule_specs(&uid, transparent_config, *table).len())
+            .sum::<usize>();
+
+        if rule_count == 0 {
+            bail!(
+                "no Linux interception scopes configured; enable capture_host or set capture_cidrs"
+            );
+        }
 
         info!(
-            transparent_port,
+            transparent_port = transparent_config.port,
             uid = %uid,
+            capture_host = transparent_config.capture_host,
+            capture_cidrs = ?transparent_config.capture_cidrs,
+            exclude_cidrs = ?transparent_config.exclude_cidrs,
             "Enabling transparent REDIRECT rules for outbound TCP:443"
         );
 
@@ -77,7 +111,7 @@ impl PlatformOps for LinuxPlatform {
         // older redirect target without accumulating duplicates.
         remove_all_heimdall_rules()?;
 
-        if let Err(error) = add_all_redirect_rules(&uid, transparent_port) {
+        if let Err(error) = add_all_redirect_rules(&uid, transparent_config) {
             let rollback_error = remove_all_heimdall_rules().err();
             return Err(match rollback_error {
                 Some(rollback_error) => anyhow!(
@@ -100,9 +134,18 @@ impl PlatformOps for LinuxPlatform {
         Ok(())
     }
 
-    fn is_interception_active(&self) -> Result<bool> {
+    fn is_interception_active(
+        &self,
+        transparent_config: &TransparentConfig,
+        _local_proxy_port: u16,
+    ) -> Result<bool> {
+        let uid = get_uid()?;
         for table in interception_tables() {
-            if !table_has_heimdall_rule(table.program)? {
+            let expected_rules = build_rule_specs(&uid, transparent_config, *table);
+            if expected_rules.is_empty() {
+                continue;
+            }
+            if !table_has_expected_heimdall_rules(table.program, expected_rules.len())? {
                 return Ok(false);
             }
         }
@@ -288,12 +331,38 @@ fn run_command_check_owned(program: &str, args: &[String]) -> Result<()> {
     run_command_check(program, &borrowed_args)
 }
 
-fn build_redirect_rule_args(uid: &str, transparent_port: u16) -> Vec<String> {
+fn build_host_exclude_rule_args(uid: &str, exclude_cidr: &str) -> Vec<String> {
     vec![
         "-t".to_string(),
         "nat".to_string(),
         "-A".to_string(),
-        "OUTPUT".to_string(),
+        OUTPUT_CHAIN.to_string(),
+        "-p".to_string(),
+        "tcp".to_string(),
+        "--dport".to_string(),
+        "443".to_string(),
+        "-m".to_string(),
+        "owner".to_string(),
+        "!".to_string(),
+        "--uid-owner".to_string(),
+        uid.to_string(),
+        "-d".to_string(),
+        exclude_cidr.to_string(),
+        "-m".to_string(),
+        "comment".to_string(),
+        "--comment".to_string(),
+        IPTABLES_COMMENT.to_string(),
+        "-j".to_string(),
+        "RETURN".to_string(),
+    ]
+}
+
+fn build_host_redirect_rule_args(uid: &str, transparent_port: u16) -> Vec<String> {
+    vec![
+        "-t".to_string(),
+        "nat".to_string(),
+        "-A".to_string(),
+        OUTPUT_CHAIN.to_string(),
         "-p".to_string(),
         "tcp".to_string(),
         "--dport".to_string(),
@@ -314,17 +383,109 @@ fn build_redirect_rule_args(uid: &str, transparent_port: u16) -> Vec<String> {
     ]
 }
 
-fn build_delete_rule_args(line_number: u32) -> Vec<String> {
+fn build_runtime_exclude_rule_args(capture_cidr: &str, exclude_cidr: &str) -> Vec<String> {
+    vec![
+        "-t".to_string(),
+        "nat".to_string(),
+        "-A".to_string(),
+        PREROUTING_CHAIN.to_string(),
+        "-s".to_string(),
+        capture_cidr.to_string(),
+        "-p".to_string(),
+        "tcp".to_string(),
+        "--dport".to_string(),
+        "443".to_string(),
+        "-d".to_string(),
+        exclude_cidr.to_string(),
+        "-m".to_string(),
+        "comment".to_string(),
+        "--comment".to_string(),
+        IPTABLES_COMMENT.to_string(),
+        "-j".to_string(),
+        "RETURN".to_string(),
+    ]
+}
+
+fn build_runtime_redirect_rule_args(capture_cidr: &str, transparent_port: u16) -> Vec<String> {
+    vec![
+        "-t".to_string(),
+        "nat".to_string(),
+        "-A".to_string(),
+        PREROUTING_CHAIN.to_string(),
+        "-s".to_string(),
+        capture_cidr.to_string(),
+        "-p".to_string(),
+        "tcp".to_string(),
+        "--dport".to_string(),
+        "443".to_string(),
+        "-m".to_string(),
+        "comment".to_string(),
+        "--comment".to_string(),
+        IPTABLES_COMMENT.to_string(),
+        "-j".to_string(),
+        "REDIRECT".to_string(),
+        "--to-port".to_string(),
+        transparent_port.to_string(),
+    ]
+}
+
+fn build_delete_rule_args(chain: &str, line_number: u32) -> Vec<String> {
     vec![
         "-t".to_string(),
         "nat".to_string(),
         "-D".to_string(),
-        "OUTPUT".to_string(),
+        chain.to_string(),
         line_number.to_string(),
     ]
 }
 
-fn parse_heimdall_rule_line_numbers(stdout: &str) -> Vec<u32> {
+fn normalized_family_cidrs<'a>(cidrs: &'a [String], is_ipv6: bool) -> Vec<&'a str> {
+    cidrs
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|cidr| !cidr.is_empty() && cidr.contains(':') == is_ipv6)
+        .collect()
+}
+
+fn build_rule_specs(
+    uid: &str,
+    transparent_config: &TransparentConfig,
+    table: InterceptionTable,
+) -> Vec<RuleSpec> {
+    let mut specs = Vec::new();
+    let exclude_cidrs = normalized_family_cidrs(&transparent_config.exclude_cidrs, table.is_ipv6);
+
+    if transparent_config.capture_host {
+        for exclude in &exclude_cidrs {
+            specs.push(RuleSpec {
+                chain: OUTPUT_CHAIN,
+                args: build_host_exclude_rule_args(uid, exclude),
+            });
+        }
+        specs.push(RuleSpec {
+            chain: OUTPUT_CHAIN,
+            args: build_host_redirect_rule_args(uid, transparent_config.port),
+        });
+    }
+
+    for capture_cidr in normalized_family_cidrs(&transparent_config.capture_cidrs, table.is_ipv6) {
+        for exclude in &exclude_cidrs {
+            specs.push(RuleSpec {
+                chain: PREROUTING_CHAIN,
+                args: build_runtime_exclude_rule_args(capture_cidr, exclude),
+            });
+        }
+        specs.push(RuleSpec {
+            chain: PREROUTING_CHAIN,
+            args: build_runtime_redirect_rule_args(capture_cidr, transparent_config.port),
+        });
+    }
+
+    specs
+}
+
+fn parse_heimdall_rule_line_numbers(stdout: &str, chain: &'static str) -> Vec<RuleLocation> {
     let mut line_numbers = Vec::new();
     for line in stdout.lines() {
         if !line.contains(IPTABLES_COMMENT) {
@@ -333,55 +494,71 @@ fn parse_heimdall_rule_line_numbers(stdout: &str) -> Vec<u32> {
 
         if let Some(num_str) = line.split_whitespace().next() {
             if let Ok(num) = num_str.parse::<u32>() {
-                line_numbers.push(num);
+                line_numbers.push(RuleLocation {
+                    chain,
+                    line_number: num,
+                });
             }
         }
     }
     line_numbers
 }
 
-fn list_heimdall_rule_line_numbers(program: &str) -> Result<Vec<u32>> {
-    let output = run_command(program, &NAT_OUTPUT_LIST_ARGS)?;
+fn list_heimdall_rule_line_numbers(
+    program: &str,
+    chain: &'static str,
+) -> Result<Vec<RuleLocation>> {
+    let list_args = ["-t", "nat", "-L", chain, "-n", "--line-numbers"];
+    let output = run_command(program, &list_args)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{} {} failed: {}",
-            program,
-            NAT_OUTPUT_LIST_ARGS.join(" "),
-            stderr
-        );
+        bail!("{} {} failed: {}", program, list_args.join(" "), stderr);
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(parse_heimdall_rule_line_numbers(&stdout))
+    Ok(parse_heimdall_rule_line_numbers(&stdout, chain))
 }
 
-fn table_has_heimdall_rule(program: &str) -> Result<bool> {
-    Ok(!list_heimdall_rule_line_numbers(program)?.is_empty())
+fn list_all_heimdall_rule_line_numbers(program: &str) -> Result<Vec<RuleLocation>> {
+    let mut results = Vec::new();
+    for chain in [OUTPUT_CHAIN, PREROUTING_CHAIN] {
+        results.extend(list_heimdall_rule_line_numbers(program, chain)?);
+    }
+    Ok(results)
 }
 
-fn add_all_redirect_rules(uid: &str, transparent_port: u16) -> Result<()> {
+fn table_has_expected_heimdall_rules(program: &str, expected_rule_count: usize) -> Result<bool> {
+    Ok(list_all_heimdall_rule_line_numbers(program)?.len() >= expected_rule_count)
+}
+
+fn add_all_redirect_rules(uid: &str, transparent_config: &TransparentConfig) -> Result<()> {
     for table in interception_tables() {
-        let args = build_redirect_rule_args(uid, transparent_port);
-        run_command_check_owned(table.program, &args).with_context(|| {
-            format!(
-                "adding {} transparent redirect rule via {}",
-                table.family, table.program
-            )
-        })?;
+        for rule in build_rule_specs(uid, transparent_config, *table) {
+            run_command_check_owned(table.program, &rule.args).with_context(|| {
+                format!(
+                    "adding {} transparent redirect rule in {} via {}",
+                    table.family, rule.chain, table.program
+                )
+            })?;
+        }
     }
     Ok(())
 }
 
 fn remove_rules_by_comment(program: &str) -> Result<()> {
-    let mut line_numbers = list_heimdall_rule_line_numbers(program)?;
+    let mut line_numbers = list_all_heimdall_rule_line_numbers(program)?;
 
     // Delete in reverse order so line numbers stay valid.
+    line_numbers.sort_by(|a, b| a.chain.cmp(b.chain).then(a.line_number.cmp(&b.line_number)));
     line_numbers.reverse();
-    for num in line_numbers {
-        let args = build_delete_rule_args(num);
-        run_command_check_owned(program, &args)
-            .with_context(|| format!("removing Heimdall redirect rule {} via {}", num, program))?;
+    for location in line_numbers {
+        let args = build_delete_rule_args(location.chain, location.line_number);
+        run_command_check_owned(program, &args).with_context(|| {
+            format!(
+                "removing Heimdall redirect rule {} from {} via {}",
+                location.line_number, location.chain, program
+            )
+        })?;
     }
 
     Ok(())
@@ -486,9 +663,11 @@ fn remove_etc_environment_var(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_delete_rule_args, build_redirect_rule_args, interception_tables,
-        parse_heimdall_rule_line_numbers,
+        build_delete_rule_args, build_host_redirect_rule_args, build_rule_specs,
+        build_runtime_redirect_rule_args, interception_tables, parse_heimdall_rule_line_numbers,
+        InterceptionTable, OUTPUT_CHAIN, PREROUTING_CHAIN,
     };
+    use crate::config::{InterceptionMethod, TransparentConfig};
 
     #[test]
     fn interception_tables_cover_ipv4_and_ipv6() {
@@ -499,8 +678,8 @@ mod tests {
     }
 
     #[test]
-    fn build_redirect_rule_args_redirects_tcp_443_to_listener_port() {
-        let args = build_redirect_rule_args("1000", 19443);
+    fn build_host_redirect_rule_args_redirects_tcp_443_to_listener_port() {
+        let args = build_host_redirect_rule_args("1000", 19443);
         assert_eq!(
             args,
             vec![
@@ -530,6 +709,64 @@ mod tests {
     }
 
     #[test]
+    fn build_runtime_redirect_rule_args_redirects_runtime_subnet_to_listener_port() {
+        let args = build_runtime_redirect_rule_args("172.17.0.0/16", 19443);
+        assert_eq!(
+            args,
+            vec![
+                "-t",
+                "nat",
+                "-A",
+                "PREROUTING",
+                "-s",
+                "172.17.0.0/16",
+                "-p",
+                "tcp",
+                "--dport",
+                "443",
+                "-m",
+                "comment",
+                "--comment",
+                "heimdall-redirect",
+                "-j",
+                "REDIRECT",
+                "--to-port",
+                "19443",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_rule_specs_supports_host_and_runtime_scopes() {
+        let config = TransparentConfig {
+            enabled: true,
+            port: 19443,
+            host: "0.0.0.0".to_string(),
+            method: InterceptionMethod::Auto,
+            capture_host: true,
+            capture_cidrs: vec!["172.17.0.0/16".to_string()],
+            exclude_cidrs: vec!["10.0.0.0/8".to_string()],
+            exclude_pids: Vec::new(),
+        };
+
+        let specs = build_rule_specs(
+            "1000",
+            &config,
+            InterceptionTable {
+                program: "iptables",
+                family: "IPv4",
+                is_ipv6: false,
+            },
+        );
+
+        assert_eq!(specs.len(), 4);
+        assert_eq!(specs[0].chain, OUTPUT_CHAIN);
+        assert_eq!(specs[1].chain, OUTPUT_CHAIN);
+        assert_eq!(specs[2].chain, PREROUTING_CHAIN);
+        assert_eq!(specs[3].chain, PREROUTING_CHAIN);
+    }
+
+    #[test]
     fn parse_heimdall_rule_line_numbers_ignores_unrelated_rules() {
         let listing = "\
 num  target     prot opt source               destination
@@ -539,13 +776,25 @@ num  target     prot opt source               destination
 7    REDIRECT   tcp  --  anywhere             anywhere             owner UID match ! 1000 /* heimdall-redirect */ redir ports 19443
 ";
 
-        assert_eq!(parse_heimdall_rule_line_numbers(listing), vec![2, 7]);
+        assert_eq!(
+            parse_heimdall_rule_line_numbers(listing, OUTPUT_CHAIN),
+            vec![
+                super::RuleLocation {
+                    chain: OUTPUT_CHAIN,
+                    line_number: 2,
+                },
+                super::RuleLocation {
+                    chain: OUTPUT_CHAIN,
+                    line_number: 7,
+                },
+            ]
+        );
     }
 
     #[test]
-    fn build_delete_rule_args_uses_output_line_number() {
+    fn build_delete_rule_args_uses_chain_and_line_number() {
         assert_eq!(
-            build_delete_rule_args(7),
+            build_delete_rule_args(OUTPUT_CHAIN, 7),
             vec!["-t", "nat", "-D", "OUTPUT", "7"]
         );
     }

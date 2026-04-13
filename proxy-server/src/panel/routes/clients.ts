@@ -19,13 +19,13 @@ export function registerClientRoutes(
   });
 
   app.post("/panel/api/clients", async (request, reply) => {
-    const body = request.body as { machineId?: string; description?: string } | null;
+    const body = request.body as { machineId?: string; description?: string; sourceCidrs?: string[] } | null;
     if (!body?.machineId) {
       return reply.code(400).send({ error: "machineId is required" });
     }
 
     try {
-      const result = createClient(db, body.machineId, body.description ?? "");
+      const result = createClient(db, body.machineId, body.description ?? "", body.sourceCidrs ?? []);
       return reply.code(201).send({
         client: result.client,
         token: result.token,
@@ -40,11 +40,12 @@ export function registerClientRoutes(
 
   app.put("/panel/api/clients/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
-    const body = request.body as { description?: string; enabled?: boolean } | null;
+    const body = request.body as { description?: string; enabled?: boolean; sourceCidrs?: string[] } | null;
 
     const updated = updateClient(db, parseInt(id, 10), {
       description: body?.description,
       enabled: body?.enabled,
+      sourceCidrs: body?.sourceCidrs,
     });
 
     if (!updated) {

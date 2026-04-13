@@ -37,8 +37,10 @@ auth:
   clients:
     - machineId: "dev-laptop-1"
       token: "some-secure-token-here"
+      sourceCidrs: []
     - machineId: "ci-runner-7"
       token: "another-secure-token"
+      sourceCidrs: ["203.0.113.10/32"]
 
 bypass:
   domains: ["*.internal.corp", "10.*"]

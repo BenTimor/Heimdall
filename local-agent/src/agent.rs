@@ -274,9 +274,11 @@ fn reapply_linux_interception_if_needed(config: &AgentConfig) {
     match crate::state::InstallState::load() {
         Ok(Some(state)) if state.interception_enabled => {
             let platform = crate::platform::platform();
-            match platform.is_interception_active() {
+            match platform.is_interception_active(&config.transparent, config.local_proxy.port) {
                 Ok(false) => {
-                    if let Err(e) = platform.enable_interception(config.transparent.port) {
+                    if let Err(e) =
+                        platform.enable_interception(&config.transparent, config.local_proxy.port)
+                    {
                         warn!(error = %e, "failed to re-apply interception rules");
                     } else {
                         info!("Re-applied interception rules (lost after reboot)");

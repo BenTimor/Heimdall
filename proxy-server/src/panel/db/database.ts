@@ -68,6 +68,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 INSERT OR IGNORE INTO schema_version (version) VALUES (1);
 `;
 
+const MIGRATION_V2 = `
+ALTER TABLE clients ADD COLUMN source_cidrs TEXT DEFAULT '[]';
+UPDATE schema_version SET version = 2 WHERE version < 2;
+INSERT OR IGNORE INTO schema_version (version) VALUES (2);
+`;
+
 export function initDatabase(dbPath: string): Database.Database {
   const dir = path.dirname(dbPath);
   fs.mkdirSync(dir, { recursive: true });
@@ -81,6 +87,10 @@ export function initDatabase(dbPath: string): Database.Database {
   if (version < 1) {
     logger.info("Running database migration v1");
     db.exec(MIGRATION_V1);
+  }
+  if (version < 2) {
+    logger.info("Running database migration v2");
+    db.exec(MIGRATION_V2);
   }
 
   logger.info({ dbPath }, "Database initialized");

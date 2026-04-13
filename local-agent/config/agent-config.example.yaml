@@ -26,6 +26,9 @@ transparent:
   port: 19443
   host: "0.0.0.0"
   method: "auto"  # auto | windivert | system_proxy
+  capture_host: true
+  capture_cidrs: []  # e.g. ["172.17.0.0/16", "10.244.0.0/16"] for Docker/CNI bridges on the same host
+  exclude_cidrs: []  # destination CIDRs to bypass interception
 
 logging:
   level: "info"

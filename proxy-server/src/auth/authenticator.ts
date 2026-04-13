@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { AuthBackend } from "./auth-backend.js";
 import { createLogger } from "../utils/logger.js";
+import { isSourceIpAllowed, normalizeSourceIp } from "./source-ip.js";
 
 const logger = createLogger({ name: "authenticator" });
 
@@ -8,6 +9,10 @@ export interface AuthResult {
   authenticated: boolean;
   machineId?: string;
   error?: string;
+}
+
+export interface AuthContext {
+  sourceIp?: string;
 }
 
 export class Authenticator {
@@ -22,7 +27,7 @@ export class Authenticator {
     }
   }
 
-  authenticate(proxyAuthHeader?: string): AuthResult {
+  authenticate(proxyAuthHeader?: string, context: AuthContext = {}): AuthResult {
     if (!this.enabled) {
       return { authenticated: true, machineId: "anonymous" };
     }
@@ -81,6 +86,15 @@ export class Authenticator {
       if (!crypto.timingSafeEqual(tokenBuf, expectedBuf)) {
         return { authenticated: false, error: "Invalid token" };
       }
+    }
+
+    if (!isSourceIpAllowed(context.sourceIp, client.sourceCidrs)) {
+      logger.warn({
+        machineId,
+        sourceIp: normalizeSourceIp(context.sourceIp),
+        allowedSourceCidrs: client.sourceCidrs,
+      }, "Authentication rejected due to source IP policy");
+      return { authenticated: false, error: "Source IP not allowed" };
     }
 
     return { authenticated: true, machineId };

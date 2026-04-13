@@ -80,7 +80,7 @@ describe("TunnelServer", () => {
 
     const authConfig = {
       enabled: true,
-      clients: [{ machineId: "agent-1", token: "secret-token" }],
+      clients: [{ machineId: "agent-1", token: "secret-token", sourceCidrs: ["127.0.0.1/32"] }],
     };
     const authenticator = new Authenticator({ enabled: true }, new ConfigAuthBackend(authConfig));
 
@@ -154,6 +154,60 @@ describe("TunnelServer", () => {
     socket.write(encodeFrame(0, FrameType.AUTH, Buffer.from("agent-1:wrong-token")));
     const reason = await responsePromise;
     expect(reason).toContain("Invalid token");
+  });
+
+  it("rejects tunnel auth from non-allowed source IPs", async () => {
+    const restrictedServer = new TunnelServer({
+      tunnelConfig: {
+        enabled: true,
+        port: 0,
+        host: "127.0.0.1",
+        tls: { certFile: "", keyFile: "" },
+        heartbeatIntervalMs: 60000,
+        heartbeatTimeoutMs: 120000,
+      },
+      authenticator: new Authenticator(
+        { enabled: true },
+        new ConfigAuthBackend({
+          enabled: true,
+          clients: [{ machineId: "agent-1", token: "secret-token", sourceCidrs: ["10.0.0.0/8"] }],
+        }),
+      ),
+      proxyServer: {
+        handleTunnelConnection: vi.fn(),
+        getSecretDomains: vi.fn().mockReturnValue(["api.openai.com"]),
+      } as unknown as ProxyServer,
+      logger: createMockLogger(),
+      tlsOptions: { cert: tlsCert.cert, key: tlsCert.key },
+    });
+
+    await restrictedServer.start();
+
+    try {
+      const restrictedPort = restrictedServer.address!.port;
+      const socket = await connectToTunnel(restrictedPort, tlsCert.cert);
+      const decoder = new FrameDecoder();
+
+      const responsePromise = new Promise<string>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("timeout")), 5000);
+        socket.on("data", (chunk: Buffer) => {
+          const frames = decoder.decode(chunk);
+          for (const frame of frames) {
+            if (frame.type === FrameType.AUTH_FAIL) {
+              clearTimeout(timeout);
+              resolve(frame.payload.toString());
+            }
+          }
+        });
+      });
+
+      socket.write(encodeFrame(0, FrameType.AUTH, Buffer.from("agent-1:secret-token")));
+      const reason = await responsePromise;
+      expect(reason).toContain("Source IP not allowed");
+      socket.destroy();
+    } finally {
+      await restrictedServer.stop();
+    }
   });
 
   it("rejects non-AUTH frame before authentication", async () => {

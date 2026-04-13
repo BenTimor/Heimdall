@@ -90,6 +90,7 @@ export class ProxyServer {
     // Auth check
     const authResult = this.authenticator.authenticate(
       req.headers["proxy-authorization"] as string | undefined,
+      { sourceIp: req.socket.remoteAddress },
     );
     if (!authResult.authenticated) {
       res.writeHead(407, {
@@ -209,6 +210,7 @@ export class ProxyServer {
     // Auth check
     const authResult = this.authenticator.authenticate(
       req.headers["proxy-authorization"] as string | undefined,
+      { sourceIp: clientSocket.remoteAddress },
     );
     if (!authResult.authenticated) {
       clientSocket.end(

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
 use super::PlatformOps;
+use crate::config::TransparentConfig;
 use crate::state::RuntimeTrustState;
 
 pub struct WindowsPlatform;
@@ -25,19 +26,26 @@ pub fn is_elevated() -> Result<bool> {
 }
 
 impl PlatformOps for WindowsPlatform {
-    fn enable_interception(&self, transparent_port: u16) -> Result<()> {
+    fn enable_interception(
+        &self,
+        _transparent_config: &TransparentConfig,
+        local_proxy_port: u16,
+    ) -> Result<()> {
         if !is_elevated()? {
             bail!("Administrator privileges required to enable traffic interception");
         }
 
-        info!(transparent_port, "Enabling WinDivert traffic interception");
+        info!(
+            transparent_port = local_proxy_port,
+            "Enabling WinDivert traffic interception"
+        );
 
         // Configure system proxy as primary interception method on Windows.
         // WinDivert requires a signed driver and additional setup; system proxy
         // is the reliable default that works without driver installation.
-        set_system_proxy(true, transparent_port)?;
+        set_system_proxy(true, local_proxy_port)?;
 
-        info!("System proxy configured for localhost:{}", transparent_port);
+        info!("System proxy configured for localhost:{}", local_proxy_port);
         Ok(())
     }
 
@@ -48,7 +56,11 @@ impl PlatformOps for WindowsPlatform {
         Ok(())
     }
 
-    fn is_interception_active(&self) -> Result<bool> {
+    fn is_interception_active(
+        &self,
+        _transparent_config: &TransparentConfig,
+        _local_proxy_port: u16,
+    ) -> Result<bool> {
         is_system_proxy_enabled()
     }
 
