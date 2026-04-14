@@ -334,32 +334,56 @@ install_runner_hooks() {
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-cleanup_dir() {
+cleanup_runner_workdir() {
+  local dir="\$1"
+  if [[ -d "\${dir}" ]]; then
+    find "\${dir}" -mindepth 1 -maxdepth 1 \
+      ! -name '_actions' \
+      ! -name '_tool' \
+      ! -name '_temp' \
+      ! -name '_diag' \
+      -exec rm -rf {} +
+  fi
+}
+
+cleanup_dir_contents() {
   local dir="\$1"
   if [[ -d "\${dir}" ]]; then
     find "\${dir}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
   fi
 }
 
-cleanup_dir "${RUNNER_DIR}/${GITHUB_RUNNER_WORKDIR}"
-cleanup_dir "${RUNNER_USER_HOME}/.local/share/opencode"
-cleanup_dir "${RUNNER_USER_HOME}/.cache/opencode"
+cleanup_runner_workdir "${RUNNER_DIR}/${GITHUB_RUNNER_WORKDIR}"
+cleanup_dir_contents "${RUNNER_USER_HOME}/.local/share/opencode"
+cleanup_dir_contents "${RUNNER_USER_HOME}/.cache/opencode"
 EOF
 
   cat >"${RUNNER_HOOKS_DIR}/job-completed.sh" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-cleanup_dir() {
+cleanup_runner_workdir() {
+  local dir="\$1"
+  if [[ -d "\${dir}" ]]; then
+    find "\${dir}" -mindepth 1 -maxdepth 1 \
+      ! -name '_actions' \
+      ! -name '_tool' \
+      ! -name '_temp' \
+      ! -name '_diag' \
+      -exec rm -rf {} +
+  fi
+}
+
+cleanup_dir_contents() {
   local dir="\$1"
   if [[ -d "\${dir}" ]]; then
     find "\${dir}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
   fi
 }
 
-cleanup_dir "${RUNNER_DIR}/${GITHUB_RUNNER_WORKDIR}"
-cleanup_dir "${RUNNER_USER_HOME}/.local/share/opencode"
-cleanup_dir "${RUNNER_USER_HOME}/.cache/opencode"
+cleanup_runner_workdir "${RUNNER_DIR}/${GITHUB_RUNNER_WORKDIR}"
+cleanup_dir_contents "${RUNNER_USER_HOME}/.local/share/opencode"
+cleanup_dir_contents "${RUNNER_USER_HOME}/.cache/opencode"
 EOF
 
   chmod 0755 "${RUNNER_HOOKS_DIR}/job-started.sh" "${RUNNER_HOOKS_DIR}/job-completed.sh"
