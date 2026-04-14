@@ -16,7 +16,7 @@ It installs:
 - Linux transparent interception on the runner host
 - a GitHub self-hosted runner as the unprivileged `gha-runner` user
 - a GitHub self-hosted runner registration tied to your repository or org
-- cleanup hooks that wipe the runner workdir and OpenCode state between jobs
+- cleanup hooks that wipe the runner workdir, downloaded action copies, and OpenCode state between jobs
 
 ## Usage
 

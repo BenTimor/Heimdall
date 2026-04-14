@@ -29,7 +29,7 @@ The public demo should use this model:
 4. store the Heimdall config at `/etc/heimdall/agent-config.yaml` with `0600` permissions
 5. install the Heimdall CA into the machine trust store
 6. enable transparent interception on the host before the runner starts taking jobs
-7. install runner hooks that wipe the workdir and OpenCode state before and after each job
+7. install runner hooks that wipe the workdir, downloaded action copies, and OpenCode state after each job
 
 This keeps the upstream OpenCode action unchanged while moving the reusable Heimdall credential out of GitHub and out of workflow secrets.
 
@@ -71,7 +71,7 @@ What `sourceCidrs` protects:
 What it does not protect:
 
 - a job already running on the runner can still use the demo-scoped credential during that run
-- this is why the demo should use isolated, low-value secrets and a disposable runner
+- this is why the demo should use isolated, low-value secrets on a dedicated demo runner
 
 ## Runner Image Provisioning
 
