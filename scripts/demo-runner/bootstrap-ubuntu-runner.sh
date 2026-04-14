@@ -334,18 +334,6 @@ install_runner_hooks() {
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-cleanup_runner_workdir() {
-  local dir="\$1"
-  if [[ -d "\${dir}" ]]; then
-    find "\${dir}" -mindepth 1 -maxdepth 1 \
-      ! -name '_actions' \
-      ! -name '_tool' \
-      ! -name '_temp' \
-      ! -name '_diag' \
-      -exec rm -rf {} +
-  fi
-}
-
 cleanup_dir_contents() {
   local dir="\$1"
   if [[ -d "\${dir}" ]]; then
@@ -353,7 +341,6 @@ cleanup_dir_contents() {
   fi
 }
 
-cleanup_runner_workdir "${RUNNER_DIR}/${GITHUB_RUNNER_WORKDIR}"
 cleanup_dir_contents "${RUNNER_USER_HOME}/.local/share/opencode"
 cleanup_dir_contents "${RUNNER_USER_HOME}/.cache/opencode"
 EOF
@@ -432,7 +419,8 @@ WantedBy=multi-user.target
 EOF
 
   systemctl daemon-reload
-  systemctl enable --now github-actions-runner.service
+  systemctl enable github-actions-runner.service
+  systemctl restart github-actions-runner.service
 }
 
 print_summary() {
