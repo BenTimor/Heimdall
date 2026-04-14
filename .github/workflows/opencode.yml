@@ -40,6 +40,7 @@ jobs:
           OPENROUTER_API_KEY: __OPENROUTER_API_KEY__
         with:
           model: openrouter/z-ai/glm-5.1
+          share: "false"
 
       - name: Print Heimdall service status on failure
         if: failure()
